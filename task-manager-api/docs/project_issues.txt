@@ -1,0 +1,118 @@
+================================
+PHASE 2: CODE SMELLS DETECTION
+================================
+
+Code Smells Detected:
+- God Object / Fat Controller: routes concentrando CRUD + regras + serialização
+- Long Method: get_tasks, summary_report, create_user, update_task, get_user_tasks
+- Duplicated Code: checagem de overdue, validação de status/priority/email (3+ locais)
+- Feature Envy: routes acessam profundamente campos de Model em vez de to_dict/helpers
+- Dead Code: NotificationService não referenciado; helpers.process_task_data não usado pelas routes
+- Shotgun Surgery: alterar regra de overdue exige mudanças em task_routes, user_routes, report_routes
+- Insecure / Deprecated Crypto: MD5 para senhas; datetime.utcnow() deprecated (Py 3.12+)
+
+Architecture Issues Detected:
+- Incomplete MVC / Lack of Separation of Concerns (lógica de negócio nas routes)
+- Tight Coupling (routes → db.session + models direto, sem service/controller)
+- Hardcoded Secrets (SECRET_KEY, credenciais SMTP)
+- Password Leakage via User.to_dict()
+- Fake Authentication (token JWT fictício)
+- N+1 Queries em GET /tasks
+- Misplaced Responsibilities (CRUD de categories em report_routes)
+- Poor Error Handling (bare except, print em vez de logger)
+- Unused Dependencies (marshmallow, requests, python-dotenv)
+
+------------------------------------------------
+FINDINGS (ordered by severity)
+------------------------------------------------
+
+[CRITICAL] Hardcoded secrets
+  Location: app.py:13 (SECRET_KEY); services/notification_service.py:7-10 (SMTP user/password)
+  Description: Credenciais e chave secreta embutidas no código-fonte. Exposição
+  em repositório compromete a aplicação e serviços externos.
+
+[CRITICAL] Insecure password hashing (MD5) + password exposed in API
+  Location: models/user.py:21 (to_dict inclui password); models/user.py:27-32 (MD5)
+  Description: MD5 é criptograficamente inadequado para senhas. Além disso,
+  User.to_dict() devolve o hash da senha em respostas HTTP (login, GET user, create/update).
+
+[CRITICAL] Fake authentication / no real authorization
+  Location: routes/user_routes.py:185-211
+  Description: Login retorna 'fake-jwt-token-' + user.id. Nenhum endpoint protege
+  recursos; roles (admin/manager) existem no model mas não são aplicados.
+
+[CRITICAL] God routes / Fat Controllers (violação total de MVC)
+  Location: routes/task_routes.py, routes/user_routes.py, routes/report_routes.py
+  Description: Rotas misturam HTTP handling, validação, regras de negócio,
+  queries e serialização. Não há camada Controller/Service efetiva. services/
+  existe mas NotificationService nunca é chamado.
+
+[HIGH] Lack of Separation of Concerns / Incomplete MVC
+  Location: Estrutura geral (models/ + routes/ apenas)
+  Description: Models fazem persistência + serialização + validação parcial.
+  Routes atuam como View+Controller+Service. Não há Views/Schemas dedicados
+  apesar de marshmallow estar em requirements.txt.
+
+[HIGH] Duplicated overdue / status / priority / email validation (Shotgun Surgery)
+  Location: task_routes.py:30-39,65-80; user_routes.py:171-180; report_routes.py:33-43,132-135;
+            models/task.py:50-60; utils/helpers.py:19-23,74-89; user_routes.py:61,106
+  Description: Mesma lógica de overdue e validações copiada em vários pontos.
+  Mudança de regra exige edições espalhadas e inconsistentes.
+
+[HIGH] N+1 queries on GET /tasks
+  Location: routes/task_routes.py:14-59
+  Description: Para cada task, faz User.query.get e Category.query.get
+  individualmente em vez de joinedload/eager loading.
+
+[HIGH] Global mutable in-memory state
+  Location: services/notification_service.py:6 (self.notifications = [])
+  Description: Notificações guardadas em lista em memória da instância;
+  perde-se no restart e não escala. Serviço ainda não integrado às rotas.
+
+[MEDIUM] Long methods / complex procedures in routes
+  Location: task_routes.get_tasks (~50 LOC), report_routes.summary_report (~90 LOC),
+            user_routes.create_user / update_user, task_routes.create_task / update_task
+  Description: Métodos longos com múltiplas responsabilidades dificultam testes
+  e leitura.
+
+[MEDIUM] Misplaced category CRUD inside report_routes
+  Location: routes/report_routes.py:157-223
+  Description: Endpoints /categories convivem com /reports, misturando domínios
+  e dificultando navegação/manutenção.
+
+[MEDIUM] Dead / unused code and dependencies
+  Location: services/notification_service.py (não importado); utils/helpers.py
+            process_task_data (não usado pelas routes); requirements: marshmallow,
+            requests, python-dotenv; imports ociosos (json, os, sys, hashlib) em
+            app.py, task_routes.py, user_routes.py, helpers.py
+  Description: Código morto e deps não usadas aumentam ruído e falsa confiança
+  em capacidades (ex.: marshmallow “parece” usado).
+
+[MEDIUM] Poor error handling and logging
+  Location: task_routes.py:62,137,236; user_routes.py:130,149; report_routes.py:186,207,221
+  Description: bare except / except Exception com print(); sem logging estruturado
+  nem códigos de erro consistentes.
+
+[LOW] Deprecated datetime.utcnow()
+  Location: models/*.py, routes/*.py, seed.py, services/notification_service.py, utils/helpers.py
+  Description: datetime.utcnow() está deprecated desde Python 3.12; preferir
+  datetime.now(timezone.utc).
+
+[LOW] Inconsistent naming and verbose boolean returns
+  Location: report_routes (cat vs category); models/user.py:is_admin; models/task.py:validate_status
+  Description: Nomenclatura inconsistente e retornos if/else True/False desnecessários
+  prejudicam legibilidade.
+
+[LOW] Magic numbers / weak password policy
+  Location: utils/helpers.py:MIN_PASSWORD_LENGTH = 4; user_routes create/update
+  Description: Política de senha mínima fraca (4 chars) e constantes espalhadas
+  sem uso unificado nas routes.
+
+================================================
+SUMMARY
+  Critical: 4
+  High:     4
+  Medium:   4
+  Low:      3
+  Total issues documented: 15 (min. 5 required ✓)
+================================================
