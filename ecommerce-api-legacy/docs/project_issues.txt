@@ -1,0 +1,74 @@
+================================
+PHASE 2: CODE SMELLS DETECTION
+================================
+
+Code Smells Detected:
+- God Object / Large Class: 1 instance (AppManager)
+- Long Method: 2 instances (checkout handler, financial-report handler)
+- Duplicated / Callback Hell: nested sqlite3 callbacks in checkout and report
+- Feature Envy: route handlers access DB/config/crypto directly
+- Shotgun Surgery: schema, seeds, HTTP, domain and payment mixed in one class
+- Magic / insecure helpers: badCrypto, hard-coded secrets, global mutable state
+
+Architecture Issues Detected:
+- Lack of Separation of Concerns (no Model / View / Controller layers)
+- Tight Coupling (AppManager owns DB, routes, business rules and payment)
+- Global Mutable State (globalCache, totalRevenue in utils.js)
+- Poor Error Handling and Logging (ignored errs, card/key logged)
+- Missing transactions on multi-table checkout writes
+- N+1 style queries in financial report
+- Soft-delete integrity gap (DELETE users leaves orphan enrollments/payments)
+- Hard-coded credentials and payment gateway key in source
+
+--------------------------------
+FINDINGS (ordered by severity)
+--------------------------------
+
+[CRITICAL] God Object — AppManager concentrates infrastructure, persistence, HTTP routing, checkout domain, payment decision, financial report and user deletion in a single class.
+  Location: src/AppManager.js (class AppManager, methods initDb / setupRoutes)
+
+[CRITICAL] Hard-coded secrets — database credentials, live payment gateway key and SMTP user are committed in source.
+  Location: src/utils.js (config object)
+
+[CRITICAL] Sensitive data exposure in logs — card number and paymentGatewayKey printed to console during checkout.
+  Location: src/AppManager.js (processPaymentAndEnroll, console.log with cc and config.paymentGatewayKey)
+
+[HIGH] Lack of MVC Separation of Concerns — bootstrap, controllers, models and response formatting are not separated; no dedicated Model, View (JSON presentation) or Controller layers.
+  Location: src/app.js, src/AppManager.js, src/utils.js
+
+[HIGH] Business logic in route handlers — validation, user upsert, fake payment gateway, enrollment, payment insert and audit trail all live inside Express route callbacks.
+  Location: src/AppManager.js (app.post '/api/checkout')
+
+[HIGH] Insecure password helper (badCrypto) — not a real hash; truncates base64 and is used as if it were cryptography.
+  Location: src/utils.js (badCrypto), used in src/AppManager.js
+
+[HIGH] No transactional boundary on checkout — enrollment, payment and audit_log inserts are sequential without BEGIN/COMMIT; partial writes possible on failure.
+  Location: src/AppManager.js (nested db.run calls in processPaymentAndEnroll)
+
+[HIGH] Global mutable state — process-local cache and unused totalRevenue exported as shared mutable state.
+  Location: src/utils.js (globalCache, totalRevenue, logAndCache)
+
+[MEDIUM] Long Method / Callback Hell — deeply nested sqlite3 callbacks in checkout and financial-report make control flow hard to follow and error-prone.
+  Location: src/AppManager.js (setupRoutes: POST /api/checkout, GET /api/admin/financial-report)
+
+[MEDIUM] N+1 queries in financial report — for each course, loads enrollments then per-enrollment user and payment queries; racey assembly via counters.
+  Location: src/AppManager.js (GET /api/admin/financial-report)
+
+[MEDIUM] Missing / inconsistent error handling — several callbacks ignore err; DELETE /api/users/:id always returns success message even on DB error.
+  Location: src/AppManager.js (DELETE handler; audit_logs callback ignores err)
+
+[MEDIUM] Orphan data on user delete — deletes only users row; enrollments and payments remain dirty.
+  Location: src/AppManager.js (app.delete '/api/users/:id')
+
+[MEDIUM] Race on boot — initDb() is async via callbacks; app.listen() is not gated on schema/seed completion.
+  Location: src/app.js + src/AppManager.js (initDb)
+
+[LOW] Poor naming / abbreviated request fields — usr, eml, pwd, c_id, cc reduce readability (legacy contract).
+  Location: src/AppManager.js (checkout body mapping)
+
+[LOW] Dead / unused state — totalRevenue exported but never updated meaningfully by the app flow.
+  Location: src/utils.js
+
+Deprecated APIs: none detected for Express 4 / sqlite3 usage in this codebase (callback style is legacy-pattern but not formally deprecated).
+
+================================================

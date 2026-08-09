@@ -1,0 +1,17 @@
+================================
+PHASE 1: PROJECT ANALYSIS
+================================
+Language:      JavaScript (Node.js / CommonJS)
+Framework:     Express 4.18.2
+Dependencies:  express, sqlite3
+Domain:        LMS API (checkout, matrículas, cursos, pagamentos, relatório financeiro)
+Architecture:  Monolítica legada — sem camadas MVC; responsabilidades concentradas em AppManager
+Source files:  3 files analyzed (src/app.js, src/AppManager.js, src/utils.js)
+Entry point:   src/app.js (npm start → node src/app.js)
+Port:          3000 (hard-coded em utils.config)
+DB:            SQLite in-memory (:memory:) via sqlite3 callbacks
+DB tables:     users, courses, enrollments, payments, audit_logs
+Endpoints:     POST /api/checkout, GET /api/admin/financial-report, DELETE /api/users/:id
+Tests/Lint:    Nenhum script de teste ou lint no package.json
+Build:         Sem build/transpilação; execução direta com Node
+================================================
