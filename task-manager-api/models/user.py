@@ -1,6 +1,13 @@
+from datetime import datetime, timezone
+
+from werkzeug.security import check_password_hash, generate_password_hash
+
 from database import db
-from datetime import datetime
-import hashlib
+
+
+def utcnow():
+    return datetime.now(timezone.utc)
+
 
 class User(db.Model):
     __tablename__ = 'users'
@@ -11,28 +18,26 @@ class User(db.Model):
     password = db.Column(db.String(255), nullable=False)
     role = db.Column(db.String(50), default='user')
     active = db.Column(db.Boolean, default=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=utcnow)
 
-    def to_dict(self):
-        return {
+    def to_dict(self, include_task_count=False):
+        data = {
             'id': self.id,
             'name': self.name,
             'email': self.email,
-            'password': self.password,
             'role': self.role,
             'active': self.active,
-            'created_at': str(self.created_at)
+            'created_at': self.created_at.isoformat() if self.created_at else None,
         }
+        if include_task_count:
+            data['task_count'] = len(self.tasks) if self.tasks is not None else 0
+        return data
 
-    def set_password(self, pwd):
+    def set_password(self, password):
+        self.password = generate_password_hash(password)
 
-        self.password = hashlib.md5(pwd.encode()).hexdigest()
-
-    def check_password(self, pwd):
-        return self.password == hashlib.md5(pwd.encode()).hexdigest()
+    def check_password(self, password):
+        return check_password_hash(self.password, password)
 
     def is_admin(self):
-        if self.role == 'admin':
-            return True
-        else:
-            return False
+        return self.role == 'admin'

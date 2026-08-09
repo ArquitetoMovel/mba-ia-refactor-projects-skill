@@ -1,0 +1,19 @@
+================================
+PHASE 1: PROJECT ANALYSIS
+================================
+Language:      Python 3
+Framework:     Flask 3.0.0
+ORM:           Flask-SQLAlchemy 3.1.1
+Dependencies:  flask-cors 4.0.0, marshmallow 3.20.1 (unused),
+               requests 2.31.0 (unused), python-dotenv 1.0.0 (unused)
+Domain:        Task Manager API (tasks, users, categories, reports)
+Architecture:  Camadas parciais (models/, routes/, services/, utils/) —
+               NÃO é MVC completo: rotas acumulam validação, regras de
+               negócio e acesso a dados; services/ quase não é usado;
+               sem camada Controller dedicada; View = JSON inline nas routes.
+Source files:  15 Python files analyzed (~1294 LOC)
+DB:            SQLite (tasks.db)
+DB tables:     users, tasks, categories
+Entry points:  app.py (API), seed.py (dados iniciais)
+Port:          5000 (debug=True, host=0.0.0.0)
+================================================
