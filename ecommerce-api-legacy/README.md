@@ -1,139 +1,246 @@
 # ecommerce-api-legacy
 
-API de LMS com fluxo de checkout, escrita em Node.js e Express, refatorada
-para o padrão **MVC** (Model-View-Controller) com camada de serviços.
+API de LMS com fluxo de checkout, desenvolvida em Node.js e Express, completamente refatorada para o padrão arquitetural **MVC (Model-View-Controller)** com camada de **Serviços de Domínio**, persistência relacional transacional e configuração orientada a **12-Factor App**.
 
-> Aviso: o fluxo de pagamento é fictício e serve apenas para estudo. Não use
-> cartões reais nem trate as chaves de ambiente de desenvolvimento como
-> produção.
+> Aviso: O fluxo de pagamento e os dados são fictícios e destinados para fins de estudo e benchmark arquitetural. Nunca utilize cartões reais ou credenciais de produção.
 
-## Visão geral
+---
 
-- Runtime: Node.js
-- Framework HTTP: Express 4
-- Banco: SQLite (`:memory:` por padrão) através de `sqlite3`
-- Módulos: CommonJS (`require`/`module.exports`)
-- Arquitetura: MVC + services
-- Porta: `3000` (ou `PORT` via ambiente)
-- Persistência: recriada e populada a cada inicialização quando `DB_PATH=:memory:`
+## Visão Geral
 
-## Estrutura do projeto
+- **Runtime:** Node.js (v18+)
+- **Framework Web:** Express 4
+- **Banco de Dados:** SQLite (`:memory:` por padrão ou persistido via arquivo) via `sqlite3`
+- **Módulos:** CommonJS (`require` / `module.exports`)
+- **Arquitetura:** MVC + Services Layer + Database Helpers Transacionais
+- **Porta:** `3000` (configurável via variável de ambiente `PORT`)
+- **Criptografia:** `crypto.scryptSync` nativo com salt configurável
+- **Transacionalidade:** Garantias ACID com rollback automático em operações multi-tabela
+
+---
+
+## Estrutura do Projeto
 
 ```text
 ecommerce-api-legacy/
 ├── src/
-│   ├── server.js                 # Entrada do processo (listen)
-│   ├── app.js                    # Composition root (createApp)
-│   ├── config/settings.js        # Configuração via variáveis de ambiente
-│   ├── db/database.js            # SQLite helpers, schema e seeds
-│   ├── models/                   # Model: acesso a dados
-│   ├── services/                 # Regras de negócio / orquestração
-│   ├── controllers/              # Controller: HTTP → services
-│   ├── views/httpResponses.js    # View: formatação de respostas
-│   └── routes/index.js           # Registro de rotas
-├── docs/                         # Relatórios do refactor-arch
-├── api.http
-├── .env.example
+│   ├── server.js                 # Ponto de entrada do processo (Async Bootstrap & Listen)
+│   ├── app.js                    # Composition Root (Express & Registro de Rotas)
+│   ├── config/
+│   │   └── settings.js           # Configuração centralizada via variáveis de ambiente
+│   ├── db/
+│   │   └── database.js           # SQLite async helpers, transações (withTransaction), schema e seeds
+│   ├── models/                   # Camada Model: persistência e queries SQL parametrizadas
+│   │   ├── auditLogModel.js
+│   │   ├── courseModel.js
+│   │   ├── enrollmentModel.js
+│   │   ├── paymentModel.js
+│   │   ├── reportModel.js
+│   │   └── userModel.js
+│   ├── services/                 # Camada de Domínio: regras de negócio e integrações
+│   │   ├── checkoutService.js
+│   │   ├── errors.js             # Classe de erro de aplicação (AppError)
+│   │   ├── passwordService.js    # Hashing seguro com scrypt + salt
+│   │   ├── paymentGateway.js     # Gateway de pagamento isolado
+│   │   ├── reportService.js      # Agregação pura de relatórios financeiros
+│   │   └── userService.js        # Exclusão transacional em cascata
+│   ├── controllers/              # Camada Controller: orquestração HTTP e delegação
+│   │   ├── checkoutController.js
+│   │   ├── reportController.js
+│   │   └── userController.js
+│   ├── views/
+│   │   └── httpResponses.js      # Camada View: formatação padronizada de respostas HTTP
+│   └── routes/
+│       └── index.js              # Mapeamento e registro de rotas
+├── docs/                         # Documentação e relatórios da refatoração
+│   ├── playbook_refatoracao.md   # Playbook com os 8 padrões de transformação (Antes/Depois)
+│   ├── project_analysis.txt      # Relatório Fase 1 (Stack & Arquitetura)
+│   ├── project_issues.txt        # Relatório Fase 2 (Detecção de Code Smells & Anti-patterns)
+│   └── project_refactored.txt    # Relatório Fase 3 (Resultado da Refatoração)
+├── .cursor/skills/refactor-arch/ # Skill de automação arquitetural
+│   ├── SKILL.md                  # Workflow das 4 fases da refatoração
+│   ├── references/
+│   │   ├── anti_patterns_catalog.md
+│   │   └── issues_severity.md
+│   └── templates/
+├── api.http                      # Exemplos executáveis de requisições HTTP
+├── .env.example                  # Modelo de variáveis de ambiente
 ├── package.json
-├── AGENTS.md
+├── AGENTS.md                     # Instruções e regras para agentes de IA
 └── README.md
 ```
 
-### Fluxo de inicialização
+---
 
-`src/server.js` executa:
+## Ciclo de Vida e Fluxo de Inicialização
 
-1. `createApp()` em `src/app.js`
-2. Abre o banco e **aguarda** schema + seeds
-3. Registra as rotas MVC
-4. Escuta na porta configurada
+A aplicação implementa o padrão **Composition Root** com bootstrap assíncrono para prevenir condições de corrida (*Boot Race Condition*):
 
-### Modelo de dados
+1. [`src/server.js`](file:///Users/alexandre/Developer/mba-ia-refactor-projects-skill/ecommerce-api-legacy/src/server.js) invoca `createApp()` de forma assíncrona.
+2. [`src/app.js`](file:///Users/alexandre/Developer/mba-ia-refactor-projects-skill/ecommerce-api-legacy/src/app.js) inicializa a instância do Express e abre a conexão do banco via `openDatabase()`.
+3. Executa `await initSchemaAndSeed(db)` em [`src/db/database.js`](file:///Users/alexandre/Developer/mba-ia-refactor-projects-skill/ecommerce-api-legacy/src/db/database.js), garantindo a criação de DDLs e carga inicial de dados antes do tráfego HTTP.
+4. Registra as rotas da aplicação via `registerRoutes(app, db)`.
+5. O servidor passa a escutar na porta configurada (`PORT`), garantindo disponibilidade imediata sem falhas de inicialização.
 
-| Tabela | Responsabilidade |
-| --- | --- |
-| `users` | Usuários |
-| `courses` | Cursos, preços e status ativo |
-| `enrollments` | Relação entre usuários e cursos |
-| `payments` | Pagamentos associados a matrículas |
-| `audit_logs` | Registro textual de eventos de checkout |
+---
 
-## Como instalar e iniciar
+## Modelo de Dados (Tabelas SQLite)
+
+| Tabela | Campos Principais | Responsabilidade |
+|---|---|---|
+| `users` | `id`, `name`, `email`, `pass` | Cadastro de usuários e credenciais com hash seguro |
+| `courses` | `id`, `title`, `price`, `active` | Cursos disponíveis, precificação e status ativo |
+| `enrollments` | `id`, `user_id`, `course_id` | Relação de matrícula de usuários em cursos |
+| `payments` | `id`, `enrollment_id`, `amount`, `status` | Histórico financeiro e status de pagamento (`PAID`, `DENIED`) |
+| `audit_logs` | `id`, `action`, `created_at` | Trilha de auditoria textual de operações de checkout |
+
+---
+
+## Variáveis de Ambiente
+
+As configurações são gerenciadas em [`src/config/settings.js`](file:///Users/alexandre/Developer/mba-ia-refactor-projects-skill/ecommerce-api-legacy/src/config/settings.js) e podem ser personalizadas via arquivo `.env`:
+
+| Variável | Padrão | Descrição |
+|---|---|---|
+| `PORT` | `3000` | Porta do servidor HTTP |
+| `SQLITE_PATH` | `:memory:` | Caminho do arquivo de banco SQLite (`:memory:` ou `./data.db`) |
+| `PASSWORD_SALT` | `dev_salt_change_in_production` | Salt utilizado na derivação de chave Scrypt para senhas |
+| `PAYMENT_GATEWAY_KEY` | `pk_test_local` | Chave de integração do gateway de pagamento (não logada) |
+
+---
+
+## Instalação e Execução
+
+### Pré-requisitos
+- Node.js 18+ instalado
+- npm
+
+### Passo a Passo
 
 ```bash
+# 1. Acessar o diretório do projeto
 cd ecommerce-api-legacy
+
+# 2. Instalar dependências
 npm ci
-cp .env.example .env   # opcional
+
+# 3. Configurar variáveis de ambiente (opcional)
+cp .env.example .env
+
+# 4. Iniciar o servidor
 npm start
 ```
 
-A API fica em `http://localhost:3000`. Encerrar com `Ctrl+C`.
+O servidor estará ativo em `http://localhost:3000`. Pressione `Ctrl+C` para encerrar.
 
-Variáveis suportadas (ver `.env.example`):
+---
 
-| Variável | Padrão | Uso |
-| --- | --- | --- |
-| `PORT` | `3000` | Porta HTTP |
-| `DB_PATH` | `:memory:` | Caminho do SQLite |
-| `PAYMENT_GATEWAY_KEY` | `local-dev-only` | Chave fictícia (não logada) |
-| `PASSWORD_SALT` | `local-dev-salt` | Salt para `scrypt` em novas senhas |
+## Endpoints da API
 
-## Verificação rápida
+### 1. Checkout de Cursos
+- **Rota:** `POST /api/checkout`
+- **Headers:** `Content-Type: application/json`
+- **Contrato de Entrada (Legado):**
+  ```json
+  {
+    "usr": "Maria Silva",
+    "eml": "maria@email.com",
+    "pwd": "senhaSegura123",
+    "c_id": 1,
+    "card": "4111111111111111"
+  }
+  ```
+- **Comportamento:**
+  - Valida a presença de todos os campos obrigatórios (`400 Bad Request`).
+  - Verifica se o curso existe e está ativo (`404 Curso não encontrado`).
+  - Valida o pagamento: cartões iniciados em `4` são aprovados (`PAID`); demais são recusados (`400 Pagamento recusado`).
+  - Executa a criação de usuário (se inexistente com senha hasheada em Scrypt), matrícula, pagamento e registro de auditoria dentro de uma **transação ACID atômica**.
+- **Resposta de Sucesso (`200 OK`):**
+  ```json
+  {
+    "msg": "Sucesso",
+    "enrollment_id": 2
+  }
+  ```
+
+---
+
+### 2. Relatório Financeiro Administrativo
+- **Rota:** `GET /api/admin/financial-report`
+- **Comportamento:**
+  - Realiza consulta otimizada única com `LEFT JOIN` agregando cursos, matrículas, pagamentos e alunos (sem N+1 queries).
+- **Resposta de Sucesso (`200 OK`):**
+  ```json
+  [
+    {
+      "course": "Clean Architecture",
+      "revenue": 997,
+      "students": [
+        {
+          "student": "Leonan",
+          "paid": 997
+        }
+      ]
+    },
+    {
+      "course": "Docker",
+      "revenue": 0,
+      "students": []
+    }
+  ]
+  ```
+
+---
+
+### 3. Exclusão de Usuário com Cascata Transacional
+- **Rota:** `DELETE /api/users/:id`
+- **Comportamento:**
+  - Remove transacionalmente os pagamentos associados, as matrículas e o registro do usuário em `users`.
+  - Retorna `404 Usuário não encontrado` se o ID informado não existir no banco.
+- **Resposta de Sucesso (`200 OK`):**
+  ```text
+  Usuário deletado, mas as matrículas e pagamentos ficaram sujos no banco.
+  ```
+
+---
+
+## Verificação e Testes Rápidos
+
+Execução via `curl`:
 
 ```bash
-curl http://localhost:3000/api/admin/financial-report
+# Relatório financeiro
+curl -s http://localhost:3000/api/admin/financial-report
 
-curl -X POST http://localhost:3000/api/checkout \
+# Checkout com sucesso
+curl -s -X POST http://localhost:3000/api/checkout \
   -H 'Content-Type: application/json' \
   -d '{
-    "usr": "Smoke Test",
-    "eml": "smoke@example.com",
-    "pwd": "test-only",
+    "usr": "Aluno Teste",
+    "eml": "aluno@teste.com",
+    "pwd": "minhaSenha123",
     "c_id": 2,
-    "card": "4111111111111111"
+    "card": "4111222233334444"
+  }'
+
+# Checkout com cartão recusado
+curl -s -i -X POST http://localhost:3000/api/checkout \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "usr": "Aluno Recusado",
+    "eml": "recusado@teste.com",
+    "c_id": 2,
+    "card": "5111222233334444"
   }'
 ```
 
-Resultado esperado do checkout:
+---
 
-```json
-{
-  "msg": "Sucesso",
-  "enrollment_id": 2
-}
-```
+## Documentação Arquitetural e Playbook
 
-## Endpoints
+Para aprofundamento nos padrões arquiteturais adotados e histórico de refatoração:
 
-### `POST /api/checkout`
-
-Campos legados preservados: `usr`, `eml`, `pwd`, `c_id`, `card`.
-
-- `400` se faltar campo obrigatório ou pagamento for recusado
-- `404` se o curso não existir / estiver inativo
-- `200` com `{ msg, enrollment_id }` em sucesso
-
-O checkout roda em **transação** (matrícula + pagamento + audit log). Cartão
-começando com `4` aprova; demais prefixos recusam. Dados de cartão e chaves
-**não** são logados.
-
-### `GET /api/admin/financial-report`
-
-Retorna receita por curso e lista de alunos (consulta com JOINs, sem N+1).
-Sem autenticação (cenário de estudo).
-
-### `DELETE /api/users/:id`
-
-Remove o usuário e, em transação, pagamentos e matrículas relacionados.
-Responde `404` se o usuário não existir.
-
-## Seeds iniciais
-
-- Usuário `Leonan` / `leonan@fullcycle.com.br`
-- Cursos `Clean Architecture` (997) e `Docker` (497)
-- Matrícula + pagamento `PAID` no primeiro curso
-
-## Documentação para agentes
-
-Leia [`AGENTS.md`](./AGENTS.md) antes de modificar o código. Relatórios de
-análise e refatoração estão em [`docs/`](./docs/).
+- **Playbook de Refatoração:** [`docs/playbook_refatoracao.md`](file:///Users/alexandre/Developer/mba-ia-refactor-projects-skill/ecommerce-api-legacy/docs/playbook_refatoracao.md) detalha os 8 padrões de transformação com exemplos completos de código antes e depois.
+- **Catálogo de Anti-Patterns:** [`.cursor/skills/refactor-arch/references/anti_patterns_catalog.md`](file:///Users/alexandre/Developer/mba-ia-refactor-projects-skill/ecommerce-api-legacy/.cursor/skills/refactor-arch/references/anti_patterns_catalog.md).
+- **Classificação de Severidade:** [`.cursor/skills/refactor-arch/references/issues_severity.md`](file:///Users/alexandre/Developer/mba-ia-refactor-projects-skill/ecommerce-api-legacy/.cursor/skills/refactor-arch/references/issues_severity.md).
+- **Instruções para Agentes:** [`AGENTS.md`](file:///Users/alexandre/Developer/mba-ia-refactor-projects-skill/ecommerce-api-legacy/AGENTS.md).
