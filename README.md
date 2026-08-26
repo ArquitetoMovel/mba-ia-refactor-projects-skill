@@ -56,18 +56,27 @@ Antes da automação via Skill, foi realizada uma auditoria manual detalhada nos
 
 #### Problemas Identificados Manualmente:
 
-| # | Problema Identificado | Localização | Severidade | Justificativa do Impacto |
-|---|-----------------------|-------------|------------|--------------------------|
-| 1 | **SQL Injection Generalizado** | `models.py` (várias funções) | **CRITICAL** | Queries SQL montadas por concatenação direta de strings com parâmetros do usuário (`f"SELECT * FROM produtos WHERE id = {id}"`), permitindo extração de dados e bypass de autenticação. |
-| 2 | **Endpoint de RCE no Banco (`POST /admin/query`)** | `app.py:58-69` | **CRITICAL** | Rota desprotegida que recebia JSON com comandos SQL arbitrários e os executava diretamente na base de dados de produção. |
-| 3 | **Reset Destrutivo Desprotegido (`POST /admin/reset-db`)** | `app.py:72-85` | **CRITICAL** | Rota pública sem qualquer token de autenticação que executava truncagem de todas as tabelas, causando negação de serviço e perda total de dados. |
-| 4 | **Exposição de Segredos e Senhas em Texto Plano** | `app.py:8`, `database.py`, `models.py` | **CRITICAL** | `SECRET_KEY` hardcoded, senhas gravadas em texto puro sem hash/salt no seed e devolvidas no payload de `GET /usuarios` e `GET /usuarios/<id>`. |
-| 5 | **God Module (`models.py`)** | `models.py` (~314 LOC) | **CRITICAL** | Um único arquivo acumulava regras de 4 domínios (produtos, usuários, pedidos, relatórios), persistência SQL, envio de notificações e autenticação. |
-| 6 | **Violação do MVC e Lógica nos Controllers** | `controllers.py` | **HIGH** | Controllers continham validação de domínio, regras de desconto e chamadas de notificação acopladas a objetos de requisição. |
-| 7 | **Conexão SQLite Global Mutável** | `database.py` | **HIGH** | Objeto `db_connection` global único compartilhado entre threads (`check_same_thread=False`), inviabilizando concorrência e testes isolados. |
-| 8 | **Queries N+1 no Carregamento de Pedidos** | `models.py:210-245` | **HIGH** | Ao listar pedidos, o sistema realizava consultas individuais secundárias para cada item e produto, degradando a performance. |
-| 9 | **Tratamento Genérico de Erros e Logs via `print()`** | `controllers.py` | **MEDIUM** | Blocos `except Exception as e:` engolindo erros com `print(e)` e retornando mensagens genéricas com status 500 sem rastreabilidade. |
-| 10 | **Magic Numbers em Regras de Desconto** | `models.py:280-310` | **LOW** | Limiares de faturamento (`10000`, `5000`, `1000`) e alíquotas (`0.10`, `0.05`, `0.02`) fixados no código sem constantes nomeadas. |
+`Count` indica o total de achados da respectiva severidade, conforme a [auditoria do projeto 1](./reports/audit-project-1.md): **17** no total (5 críticos, 5 altos, 4 médios e 3 baixos).
+
+| # | Problema Identificado | Localização | Severidade | Total | Justificativa do Impacto |
+|---|-----------------------|-------------|------------|-------|--------------------------|
+| 1 | **SQL Injection Generalizado** | `models.py` (várias funções) | **CRITICAL** | 5 | Queries SQL montadas por concatenação direta de strings com parâmetros do usuário, permitindo extração de dados e bypass de autenticação. |
+| 2 | **Endpoint de execução arbitrária de SQL (`POST /admin/query`)** | `app.py` (`executar_query`) | **CRITICAL** | 5 | Rota pública que recebia e executava comandos SQL arbitrários no banco. |
+| 3 | **Reset destrutivo desprotegido (`POST /admin/reset-db`)** | `app.py` (`reset_database`) | **CRITICAL** | 5 | Endpoint sem autenticação que apagava tabelas e dados, causando negação de serviço e perda irreversível. |
+| 4 | **Exposição de segredos e credenciais em texto plano** | `app.py`, `controllers.py`, `database.py`, `models.py` | **CRITICAL** | 5 | `SECRET_KEY` hardcoded, senhas sem hash e campos sensíveis expostos em endpoints e health check. |
+| 5 | **God Module (`models.py`)** | `models.py` (~314 LOC) | **CRITICAL** | 5 | Um único arquivo acumulava persistência, regras de estoque, autenticação, relatórios e notificações de vários domínios. |
+| 6 | **Quebra de separação de responsabilidades / MVC** | `app.py`, `controllers.py`, `models.py`, `database.py` | **HIGH** | 5 | Controllers, models e infraestrutura misturavam regras de negócio, validações e persistência sem camada de serviços. |
+| 7 | **Lógica de negócio e efeitos colaterais nos controllers** | `controllers.py` | **HIGH** | 5 | Validações e notificações mockadas estavam acopladas diretamente aos handlers HTTP. |
+| 8 | **Conexão SQLite global mutável** | `database.py` (`db_connection`, `get_db`) | **HIGH** | 5 | Uma conexão global com `check_same_thread=False` era compartilhada entre threads, inviabilizando isolamento e concorrência segura. |
+| 9 | **Acoplamento rígido sem injeção de dependências** | `controllers.py` | **HIGH** | 5 | Imports diretos de `models` e `database` dificultavam mocks e testes unitários independentes. |
+| 10 | **Queries N+1 no carregamento de pedidos** | `models.py` | **HIGH** | 5 | Para cada pedido eram executadas consultas secundárias de itens e produtos, degradando a performance. |
+| 11 | **Código duplicado** | `controllers.py`, `models.py` | **MEDIUM** | 4 | Validações e mapeamentos de linhas para dicionários eram repetidos em vários pontos. |
+| 12 | **Métodos longos** | `controllers.py`, `models.py` | **MEDIUM** | 4 | Fluxos de criação, relatório e listagem concentravam validação, cálculo e persistência em métodos extensos. |
+| 13 | **Tratamento genérico de erros e logs via `print()`** | `controllers.py` | **MEDIUM** | 4 | `except Exception` com `print(e)` reduzia rastreabilidade e ocultava falhas específicas. |
+| 14 | **Validação de entrada fraca** | `controllers.py` | **MEDIUM** | 4 | Campos como e-mail, tipos, preços e limites não recebiam validação adequada. |
+| 15 | **Magic numbers em regras de desconto** | `models.py` | **LOW** | 3 | Limiares e alíquotas de desconto estavam fixados no código sem constantes nomeadas. |
+| 16 | **Configuração e documentação inconsistentes** | `README.md`, configuração de porta | **LOW** | 3 | A documentação mencionava a porta `5000`, enquanto o código usava a `5003`. |
+| 17 | **Import não utilizado** | `models.py` | **LOW** | 3 | `sqlite3` era importado sem uso. |
 
 ---
 
@@ -79,18 +88,25 @@ Antes da automação via Skill, foi realizada uma auditoria manual detalhada nos
 
 #### Problemas Identificados Manualmente:
 
-| # | Problema Identificado | Localização | Severidade | Justificativa do Impacto |
-|---|-----------------------|-------------|------------|--------------------------|
-| 1 | **God Class (`AppManager.js`)** | `src/AppManager.js` (~300 LOC) | **CRITICAL** | Uma única classe gerenciava ciclo de vida do SQLite, DDL de tabelas, carga de seeds, Express routing, checkout, decisão de pagamento e relatórios. |
-| 2 | **Segredos e Chave de Gateway no Código** | `src/utils.js:4-12` | **CRITICAL** | Chave live de gateway (`PAYMENT_GATEWAY_KEY = 'pk_live_supersecret_key_12345'`) e credenciais SMTP fixadas no arquivo versionado. |
-| 3 | **Vazamento de Cartão de Crédito em Logs** | `src/AppManager.js:145` | **CRITICAL** | Número completo de cartão de crédito e chave secreta eram impressos no `console.log` a cada requisição de checkout (violação grave de PCI-DSS). |
-| 4 | **Falta de Separação de Camadas MVC** | `src/app.js`, `src/AppManager.js` | **HIGH** | Inexistência de camadas distintas de Models, Views (formatadores JSON) e Controllers; lógica de apresentação e banco misturados. |
-| 5 | **Pseudo-Criptografia Insegura (`badCrypto`)** | `src/utils.js:15-20` | **HIGH** | Algoritmo caseiro baseado em truncamento de Base64 e soma de caracteres ASCII, sem salt, vulnerável a inversão imediata. |
-| 6 | **Operações Multi-Tabela sem Transação ACID** | `src/AppManager.js:150-190` | **HIGH** | No checkout, as inserções em `users`, `enrollments`, `payments` e `audit_logs` eram executadas em callbacks separados sem `BEGIN/COMMIT`. |
-| 7 | **Estado Global Mutável em Memória** | `src/utils.js:23-28` | **HIGH** | Objetos `globalCache` e `totalRevenue` exportados e manipulados globalmente, gerando *state leakage* entre requisições. |
-| 8 | **Queries N+1 no Relatório Financeiro** | `src/AppManager.js:210-260` | **MEDIUM** | Loop assíncrono consultando matrículas e pagamentos individualmente para cada curso cadastrado. |
-| 9 | **Condição de Corrida no Boot (Boot Race Condition)** | `src/app.js` | **MEDIUM** | O servidor abria a porta HTTP via `app.listen()` antes de a criação do schema e a carga de dados no SQLite `:memory:` terminarem. |
-| 10 | **Exclusão Incompleta de Usuário (Orphan Data)** | `src/AppManager.js:275-290` | **MEDIUM** | `DELETE /api/users/:id` excluía apenas a linha da tabela `users`, deixando matrículas e pagamentos órfãos no banco de dados. |
+`Count` indica o total de achados da respectiva severidade, conforme a [auditoria do projeto 2](./reports/audit-project-2.md): **15** no total (3 críticos, 5 altos, 5 médios e 2 baixos).
+
+| # | Problema Identificado | Localização | Severidade | Total | Justificativa do Impacto |
+|---|-----------------------|-------------|------------|-------|--------------------------|
+| 1 | **God Class (`AppManager.js`)** | `src/AppManager.js` | **CRITICAL** | 3 | Uma única classe gerenciava SQLite, DDL, seeds, rotas Express, checkout, pagamentos, relatórios e exclusão de usuários. |
+| 2 | **Segredos hardcoded no código-fonte** | `src/utils.js` | **CRITICAL** | 3 | Credenciais e chave live do gateway de pagamento estavam versionadas no código. |
+| 3 | **Dados sensíveis expostos em logs** | `src/AppManager.js` | **CRITICAL** | 3 | Números completos de cartão e chaves de gateway eram registrados a cada checkout, violando PCI-DSS. |
+| 4 | **Falta de separação de camadas MVC** | `src/app.js`, `src/AppManager.js`, `src/utils.js` | **HIGH** | 5 | Apresentação, roteamento, banco e regras de negócio estavam misturados em uma estrutura monolítica. |
+| 5 | **Lógica de negócio em handlers de rota** | `src/AppManager.js` (`POST /api/checkout`) | **HIGH** | 5 | Validação, criação de usuário, matrícula, pagamento e auditoria eram executados no callback HTTP. |
+| 6 | **Pseudo-criptografia insegura (`badCrypto`)** | `src/utils.js` | **HIGH** | 5 | Algoritmo caseiro sem salt e sem derivação segura permitia reversão ou quebra trivial de senhas. |
+| 7 | **Operações multi-tabela sem transação ACID** | `src/AppManager.js` | **HIGH** | 5 | Checkout inseria matrícula, pagamento e auditoria sem fronteira transacional, permitindo inconsistência. |
+| 8 | **Estado global mutável em memória** | `src/utils.js` | **HIGH** | 5 | `globalCache` e `totalRevenue` compartilhavam estado entre requisições. |
+| 9 | **Callback hell e métodos longos** | `src/AppManager.js` | **MEDIUM** | 5 | Callbacks SQLite aninhados em mais de cinco níveis aumentavam a complexidade e dificultavam o fluxo de erros. |
+| 10 | **Queries N+1 no relatório financeiro** | `src/AppManager.js` | **MEDIUM** | 5 | Para cada curso, o relatório consultava individualmente matrículas, usuários e pagamentos. |
+| 11 | **Tratamento de erros ausente ou inconsistente** | `src/AppManager.js` | **MEDIUM** | 5 | Tratadores de exclusão e callbacks de auditoria ignoravam erros de banco. |
+| 12 | **Registros órfãos na exclusão de usuários** | `src/AppManager.js` | **MEDIUM** | 5 | A exclusão removia somente `users`, mantendo matrículas e pagamentos sem referência. |
+| 13 | **Condição de corrida no boot** | `src/app.js`, `src/AppManager.js` | **MEDIUM** | 5 | O servidor começava a escutar antes de schema e seeds do SQLite em memória terminarem. |
+| 14 | **Nomes de parâmetros abreviados** | `src/AppManager.js` | **LOW** | 2 | Identificadores como `usr`, `eml`, `pwd` e `c_id` reduziam a legibilidade do contrato. |
+| 15 | **Estado exportado sem uso** | `src/utils.js` | **LOW** | 2 | `totalRevenue` e elementos associados não eram utilizados. |
 
 ---
 
@@ -102,18 +118,25 @@ Antes da automação via Skill, foi realizada uma auditoria manual detalhada nos
 
 #### Problemas Identificados Manualmente:
 
-| # | Problema Identificado | Localização | Severidade | Justificativa do Impacto |
-|---|-----------------------|-------------|------------|--------------------------|
-| 1 | **Segredos Hardcoded no Código** | `app.py:13`, `services/notification_service.py:7-10` | **CRITICAL** | `SECRET_KEY = 'super-secret-key-change-in-production'` e credenciais de servidor SMTP embutidas nos arquivos-fonte. |
-| 2 | **Hashing Inseguro em MD5 e Vazamento de Senhas** | `models/user.py:21, 27-32` | **CRITICAL** | Uso de MD5 sem salt para armazenar senhas de usuários e inclusão do campo `password` nas respostas públicas do método `to_dict()`. |
-| 3 | **Token de Autenticação Fictício (Fake JWT)** | `routes/user_routes.py:185-211` | **CRITICAL** | Rota `/login` gerava a string estática `'fake-jwt-token-' + str(user.id)`, sem assinatura criptográfica, sem expiração e sem validação. |
-| 4 | **Fat Routes / Quebra de MVC** | `routes/task_routes.py`, `routes/user_routes.py` | **CRITICAL** | Rotas acumulavam parsing HTTP, validação de payload, regras de negócio, transações ORM diretas e serialização de respostas JSON. |
-| 5 | **Regras Duplicadas de Domínio (Shotgun Surgery)** | `task_routes.py`, `report_routes.py`, `helpers.py` | **HIGH** | Lógica de cálculo de tarefas atrasadas (`overdue`) e validações de prioridade replicadas em 4 arquivos diferentes. |
-| 6 | **Queries N+1 na Listagem de Tarefas** | `routes/task_routes.py:14-59` | **HIGH** | Na listagem `GET /tasks`, eram disparadas consultas individuais `User.query.get` e `Category.query.get` para cada tarefa. |
-| 7 | **CRUD de Categorias Deslocado no Módulo de Relatórios** | `routes/report_routes.py:157-223` | **MEDIUM** | Rotas de gerenciamento de `/categories` implementadas dentro do arquivo de relatórios analíticos, misturando domínios. |
-| 8 | **Código Morto e Dependências Não Utilizadas** | `requirements.txt`, `services/notification_service.py` | **MEDIUM** | `marshmallow` e `python-dotenv` declarados mas não usados; `NotificationService` nunca era invocado pelas rotas. |
-| 9 | **Uso de API Depreciada (`datetime.utcnow`)** | Vários arquivos em `models/`, `routes/`, `seed.py` | **LOW** | Utilização de `datetime.utcnow()`, depreciado desde o Python 3.12 em favor de `datetime.now(timezone.utc)`. |
-| 10 | **Política Fraca de Validação de Senha** | `utils/helpers.py:12` | **LOW** | Permissão de senhas com apenas 4 caracteres (`MIN_PASSWORD_LENGTH = 4`) sem regras de complexidade. |
+`Count` indica o total de achados da respectiva severidade, conforme a [auditoria do projeto 3](./reports/audit-project-3.md): **15** no total (4 críticos, 4 altos, 4 médios e 3 baixos).
+
+| # | Problema Identificado | Localização | Severidade | Total | Justificativa do Impacto |
+|---|-----------------------|-------------|------------|-------|--------------------------|
+| 1 | **Segredos hardcoded no código** | `app.py`, `services/notification_service.py` | **CRITICAL** | 4 | `SECRET_KEY` e credenciais SMTP estavam embutidos nos arquivos-fonte. |
+| 2 | **Hashing inseguro em MD5 e vazamento de senhas** | `models/user.py` | **CRITICAL** | 4 | MD5 sem salt era usado para senhas, e o campo `password` era serializado em respostas públicas. |
+| 3 | **Token de autenticação fictício** | `routes/user_routes.py` | **CRITICAL** | 4 | O login devolvia uma string estática sem assinatura, expiração ou validação nos endpoints protegidos. |
+| 4 | **God Routes / Fat Controllers** | `routes/task_routes.py`, `routes/user_routes.py`, `routes/report_routes.py` | **CRITICAL** | 4 | Rotas concentravam parsing HTTP, validação, regras de negócio, queries ORM e serialização. |
+| 5 | **MVC incompleto e responsabilidades misturadas** | Estrutura geral de `models/` e `routes/` | **HIGH** | 4 | A arquitetura não possuía controllers dedicados nem schemas de validação. |
+| 6 | **Regras duplicadas de domínio (Shotgun Surgery)** | `routes/`, `models/task.py`, `utils/helpers.py` | **HIGH** | 4 | Cálculo de atraso e validações de status e prioridade eram replicados em múltiplos arquivos. |
+| 7 | **Queries N+1 na listagem de tarefas** | `routes/task_routes.py` | **HIGH** | 4 | A listagem consultava individualmente usuário e categoria para cada tarefa. |
+| 8 | **Estado de notificação em memória e sem uso** | `services/notification_service.py` | **HIGH** | 4 | O histórico volátil não era integrado aos fluxos de criação ou atualização de tarefas. |
+| 9 | **Métodos longos nas rotas** | `routes/report_routes.py`, `routes/task_routes.py` | **MEDIUM** | 4 | Agregações e consultas extensas ficavam concentradas nos manipuladores de rota. |
+| 10 | **CRUD de categorias deslocado no módulo de relatórios** | `routes/report_routes.py` | **MEDIUM** | 4 | Endpoints de `/categories` estavam implementados junto aos relatórios analíticos. |
+| 11 | **Código morto e dependências não utilizadas** | `requirements.txt`, `utils/helpers.py` | **MEDIUM** | 4 | Dependências e funções declaradas não eram usadas pelas rotas originais. |
+| 12 | **Tratamento de erros fraco e logs via `print()`** | `routes/*.py` | **MEDIUM** | 4 | Blocos genéricos `try/except` e `print(e)` dificultavam rastreabilidade e respostas semânticas. |
+| 13 | **Uso de API depreciada (`datetime.utcnow`)** | `models/`, `routes/`, `seed.py`, `services/notification_service.py` | **LOW** | 3 | A API gera avisos de obsolescência no Python 3.12; deve ser substituída por `datetime.now(timezone.utc)`. |
+| 14 | **Nomenclatura inconsistente e booleanos verbosos** | `routes/report_routes.py`, `models/user.py` | **LOW** | 3 | Nomes como `cat` e expressões booleanas redundantes reduziam clareza. |
+| 15 | **Política fraca de validação de senha** | `utils/helpers.py` | **LOW** | 3 | Era permitido usar senhas de apenas quatro caracteres sem requisitos de complexidade. |
 
 ---
 
