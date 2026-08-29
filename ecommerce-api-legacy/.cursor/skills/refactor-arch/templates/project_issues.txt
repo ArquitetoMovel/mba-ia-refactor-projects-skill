@@ -3,15 +3,29 @@
   ================================
   Code Smells Detected:
   - Long Method: 2 instances
+    file: src/AppManager.js  line: 80-175
+    file: src/AppManager.js  line: 200-268
   - Large Class: 1 instance
+    file: src/AppManager.js  line: 1-320
   - Duplicated Code: 3 instances
+    file: src/AppManager.js  line: 48-62, 110-124
+    file: src/utils.js       line: 20-28
   - God Object: 1 instance
+    file: src/AppManager.js  line: 1-320
   - Feature Envy: 2 instances
+    file: src/AppManager.js  line: 150-172
   - Shotgun Surgery: 1 instance
+    file: src/AppManager.js  line: 48-62
+    file: src/utils.js       line: 1-40
 
   Architecture Issues Detected:
   - Tight Coupling between modules
+    file: src/AppManager.js  line: 1-20
   - Lack of Separation of Concerns
+    file: src/app.js         line: 1-25
+    file: src/AppManager.js  line: 1-320
   - Inconsistent Naming Conventions
+    file: src/AppManager.js  line: 80-95
   - Poor Error Handling and Logging
+    file: src/AppManager.js  line: 88-92
   ================================================

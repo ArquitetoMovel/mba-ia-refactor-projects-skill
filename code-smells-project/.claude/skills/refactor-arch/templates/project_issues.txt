@@ -3,15 +3,29 @@
   ================================
   Code Smells Detected:
   - Long Method: 2 instances
+    file: controllers.py  line: 40-95
+    file: models.py       line: 210-268
   - Large Class: 1 instance
+    file: models.py       line: 1-314
   - Duplicated Code: 3 instances
+    file: controllers.py  line: 48-62, 110-124
+    file: models.py       line: 20-28, 55-63
   - God Object: 1 instance
+    file: models.py       line: 1-314
   - Feature Envy: 2 instances
+    file: controllers.py  line: 150-172
   - Shotgun Surgery: 1 instance
+    file: controllers.py  line: 48-62
+    file: models.py       line: 240-255
 
   Architecture Issues Detected:
   - Tight Coupling between modules
+    file: controllers.py  line: 1-12
   - Lack of Separation of Concerns
+    file: app.py          line: 20-45
+    file: controllers.py  line: 1-180
   - Inconsistent Naming Conventions
+    file: models.py       line: 70-74
   - Poor Error Handling and Logging
+    file: controllers.py  line: 88-92
   ================================================

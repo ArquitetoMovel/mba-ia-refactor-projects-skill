@@ -1,7 +1,7 @@
 [... refatoração executada ...]
 
 ================================
-PHASE 3: REFACTORING COMPLETE
+PHASE 4: REFACTORING COMPLETE
 ================================
 New Project Structure:
 src/

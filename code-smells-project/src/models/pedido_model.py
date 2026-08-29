@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
+from src.domain.pedido import StatusPedido
 from src.models.mappers import pedido_from_row
 
 
@@ -12,7 +13,11 @@ class PedidoModel:
     def __init__(self, db: sqlite3.Connection) -> None:
         self._db = db
 
-    def _carregar_pedidos(self, where: str = "", params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+    def _carregar_pedidos(
+        self,
+        where: str = "",
+        params: tuple[Any, ...] = (),
+    ) -> list[dict[str, Any]]:
         sql = f"SELECT * FROM pedidos {where} ORDER BY id"
         rows = self._db.execute(sql, params).fetchall()
         if not rows:
@@ -48,10 +53,13 @@ class PedidoModel:
 
     def criar(self, usuario_id: int, total: float) -> int:
         cursor = self._db.execute(
-            "INSERT INTO pedidos (usuario_id, status, total) VALUES (?, 'pendente', ?)",
-            (usuario_id, total),
+            "INSERT INTO pedidos (usuario_id, status, total) VALUES (?, ?, ?)",
+            (usuario_id, StatusPedido.PENDENTE.value, total),
         )
         return int(cursor.lastrowid)
+
+    def iniciar_transacao(self) -> None:
+        self._db.execute("BEGIN IMMEDIATE")
 
     def adicionar_item(
         self,
@@ -66,11 +74,13 @@ class PedidoModel:
             (pedido_id, produto_id, quantidade, preco_unitario),
         )
 
-    def decrementar_estoque(self, produto_id: int, quantidade: int) -> None:
-        self._db.execute(
-            "UPDATE produtos SET estoque = estoque - ? WHERE id = ?",
-            (quantidade, produto_id),
+    def reservar_estoque(self, produto_id: int, quantidade: int) -> bool:
+        cursor = self._db.execute(
+            "UPDATE produtos SET estoque = estoque - ? "
+            "WHERE id = ? AND estoque >= ?",
+            (quantidade, produto_id, quantidade),
         )
+        return cursor.rowcount == 1
 
     def produto_para_pedido(self, produto_id: int) -> sqlite3.Row | None:
         return self._db.execute(
@@ -78,15 +88,42 @@ class PedidoModel:
             (produto_id,),
         ).fetchone()
 
-    def atualizar_status(self, pedido_id: int, novo_status: str) -> None:
+    def buscar_status(self, pedido_id: int) -> sqlite3.Row | None:
+        return self._db.execute(
+            "SELECT id, status FROM pedidos WHERE id = ?",
+            (pedido_id,),
+        ).fetchone()
+
+    def itens_para_reposicao(self, pedido_id: int) -> list[sqlite3.Row]:
+        return self._db.execute(
+            "SELECT produto_id, quantidade FROM itens_pedido WHERE pedido_id = ?",
+            (pedido_id,),
+        ).fetchall()
+
+    def restaurar_estoque(self, produto_id: int, quantidade: int) -> None:
         self._db.execute(
+            "UPDATE produtos SET estoque = estoque + ? WHERE id = ?",
+            (quantidade, produto_id),
+        )
+
+    def usuario_existe(self, usuario_id: int) -> bool:
+        return self._db.execute(
+            "SELECT 1 FROM usuarios WHERE id = ?",
+            (usuario_id,),
+        ).fetchone() is not None
+
+    def atualizar_status(self, pedido_id: int, novo_status: str) -> bool:
+        cursor = self._db.execute(
             "UPDATE pedidos SET status = ? WHERE id = ?",
             (novo_status, pedido_id),
         )
-        self._db.commit()
+        return cursor.rowcount == 1
 
     def commit(self) -> None:
         self._db.commit()
+
+    def rollback(self) -> None:
+        self._db.rollback()
 
     def contar(self) -> int:
         return int(self._db.execute("SELECT COUNT(*) FROM pedidos").fetchone()[0])

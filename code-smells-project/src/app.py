@@ -24,7 +24,8 @@ def create_app(settings: Settings | None = None) -> Flask:
     app = Flask(__name__)
     app.config["SECRET_KEY"] = settings.secret_key
     app.config["DEBUG"] = settings.debug
-    CORS(app)
+    if settings.cors_origins:
+        CORS(app, origins=list(settings.cors_origins))
 
     database.init_app(app, settings)
     register_error_handlers(app)

@@ -1,6 +1,7 @@
-from marshmallow import Schema, fields, validate, EXCLUDE, pre_load
-
 from config.settings import Settings
+from marshmallow import EXCLUDE, Schema, fields, validate
+
+SEARCH_STATUSES = ('',) + Settings.VALID_STATUSES
 
 
 class TaskCreateSchema(Schema):
@@ -13,21 +14,17 @@ class TaskCreateSchema(Schema):
     )
     description = fields.Str(load_default='')
     status = fields.Str(
-        load_default='pending',
+        load_default=Settings.DEFAULT_STATUS,
         validate=validate.OneOf(Settings.VALID_STATUSES),
     )
     priority = fields.Int(
         load_default=Settings.DEFAULT_PRIORITY,
-        validate=validate.Range(min=1, max=5),
+        validate=validate.Range(min=Settings.MIN_PRIORITY, max=Settings.MAX_PRIORITY),
     )
     user_id = fields.Int(allow_none=True, load_default=None)
     category_id = fields.Int(allow_none=True, load_default=None)
     due_date = fields.Date(allow_none=True, load_default=None, format='%Y-%m-%d')
     tags = fields.Raw(allow_none=True, load_default=None)
-
-    @pre_load
-    def normalize_tags(self, data, **kwargs):
-        return data
 
 
 class TaskUpdateSchema(Schema):
@@ -39,11 +36,22 @@ class TaskUpdateSchema(Schema):
     )
     description = fields.Str()
     status = fields.Str(validate=validate.OneOf(Settings.VALID_STATUSES))
-    priority = fields.Int(validate=validate.Range(min=1, max=5))
+    priority = fields.Int(validate=validate.Range(min=Settings.MIN_PRIORITY, max=Settings.MAX_PRIORITY))
     user_id = fields.Int(allow_none=True)
     category_id = fields.Int(allow_none=True)
     due_date = fields.Date(allow_none=True, format='%Y-%m-%d')
     tags = fields.Raw(allow_none=True)
+
+
+class TaskSearchSchema(Schema):
+    class Meta:
+        unknown = EXCLUDE
+
+    q = fields.Str(load_default='')
+    status = fields.Str(load_default='', validate=validate.OneOf(SEARCH_STATUSES))
+    priority = fields.Int(load_default=None, allow_none=True,
+                          validate=validate.Range(min=Settings.MIN_PRIORITY, max=Settings.MAX_PRIORITY))
+    user_id = fields.Int(load_default=None, allow_none=True)
 
 
 class TaskResponseSchema(Schema):

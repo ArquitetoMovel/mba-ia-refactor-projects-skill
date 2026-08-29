@@ -36,7 +36,6 @@ class ProdutoModel:
             "VALUES (?, ?, ?, ?, ?)",
             (nome, descricao, preco, estoque, categoria),
         )
-        self._db.commit()
         return int(cursor.lastrowid)
 
     def atualizar(
@@ -53,11 +52,15 @@ class ProdutoModel:
             "estoque = ?, categoria = ? WHERE id = ?",
             (nome, descricao, preco, estoque, categoria, produto_id),
         )
-        self._db.commit()
 
     def deletar(self, produto_id: int) -> None:
         self._db.execute("DELETE FROM produtos WHERE id = ?", (produto_id,))
+
+    def commit(self) -> None:
         self._db.commit()
+
+    def rollback(self) -> None:
+        self._db.rollback()
 
     def buscar(
         self,

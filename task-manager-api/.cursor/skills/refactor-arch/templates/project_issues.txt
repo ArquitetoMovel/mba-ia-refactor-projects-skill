@@ -3,15 +3,31 @@
   ================================
   Code Smells Detected:
   - Long Method: 2 instances
+    file: routes/task_routes.py    line: 40-95
+    file: routes/report_routes.py  line: 10-88
   - Large Class: 1 instance
+    file: routes/task_routes.py    line: 1-180
   - Duplicated Code: 3 instances
+    file: routes/task_routes.py    line: 48-62, 110-124
+    file: models/task.py           line: 40-55
+    file: utils/helpers.py         line: 12-28
   - God Object: 1 instance
+    file: routes/task_routes.py    line: 1-180
   - Feature Envy: 2 instances
+    file: routes/task_routes.py    line: 70-95
   - Shotgun Surgery: 1 instance
+    file: routes/task_routes.py    line: 48-62
+    file: models/task.py           line: 40-55
+    file: utils/helpers.py         line: 12-28
 
   Architecture Issues Detected:
   - Tight Coupling between modules
+    file: routes/user_routes.py    line: 1-20
   - Lack of Separation of Concerns
+    file: routes/task_routes.py    line: 1-180
+    file: routes/report_routes.py  line: 1-120
   - Inconsistent Naming Conventions
+    file: routes/report_routes.py  line: 45-52
   - Poor Error Handling and Logging
+    file: routes/task_routes.py    line: 88-92
   ================================================

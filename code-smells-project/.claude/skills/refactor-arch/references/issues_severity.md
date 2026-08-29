@@ -4,6 +4,31 @@ Guia de classificação de severidade para detecção de code smells, vulnerabil
 
 ---
 
+## 0. Localização obrigatória de cada finding
+
+Todo finding da Phase 2 **deve** registrar o intervalo de linhas do código-fonte. Sem `file` e `line`, o finding é inválido.
+
+| Campo | Formato | Obrigatório | Exemplo |
+|-------|---------|-------------|---------|
+| `file` | Caminho relativo ao root do projeto | Sim | `models.py` |
+| `line` | Intervalo `start-end` (1-indexed, inclusivo). Linha única: `N` ou `N-N` | Sim | `42-58` / `17` |
+| `symbol` | Função, classe ou rota afetada | Não | `criar_pedido` |
+
+Regras:
+- `line` cobre o trecho contínuo onde o smell ocorre (assinatura até o fim do bloco, ou o literal da vulnerabilidade).
+- Vários trechos no mesmo arquivo → um `line` por ocorrência, ou lista `42-58, 90-104`.
+- Não use aproximações (`~314 LOC`, "várias funções") no lugar de `line`.
+
+Template de finding:
+
+```text
+- Severity: CRITICAL
+  file: models.py
+  line: 88-96
+  symbol: login_usuario
+  description: SQL montado por concatenação de string com input do usuário.
+```
+
 ## 1. Classificação por Nível de Severidade
 
 ### CRITICAL (Crítico)

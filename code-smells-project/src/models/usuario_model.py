@@ -35,8 +35,13 @@ class UsuarioModel:
             "INSERT INTO usuarios (nome, email, senha, tipo) VALUES (?, ?, ?, ?)",
             (nome, email, senha_hash, tipo),
         )
-        self._db.commit()
         return int(cursor.lastrowid)
+
+    def commit(self) -> None:
+        self._db.commit()
+
+    def rollback(self) -> None:
+        self._db.rollback()
 
     def contar(self) -> int:
         return int(self._db.execute("SELECT COUNT(*) FROM usuarios").fetchone()[0])

@@ -15,4 +15,4 @@ def health():
 
 @health_bp.route('/')
 def index():
-    return jsonify({'message': 'Task Manager API', 'version': '2.0'})
+    return jsonify({'message': 'Task Manager API', 'version': '2.1'})

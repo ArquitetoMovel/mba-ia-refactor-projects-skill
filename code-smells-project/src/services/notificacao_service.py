@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 
+from src.domain.pedido import StatusPedido
+
 logger = logging.getLogger(__name__)
 
 
@@ -14,12 +16,12 @@ class NotificacaoService:
         logger.info("ENVIANDO PUSH: Novo pedido recebido pelo sistema")
 
     def status_atualizado(self, pedido_id: int, novo_status: str) -> None:
-        if novo_status == "aprovado":
+        if novo_status == StatusPedido.APROVADO.value:
             logger.info(
                 "NOTIFICAÇÃO: Pedido %s foi aprovado! Preparar envio.",
                 pedido_id,
             )
-        elif novo_status == "cancelado":
+        elif novo_status == StatusPedido.CANCELADO.value:
             logger.info(
                 "NOTIFICAÇÃO: Pedido %s cancelado. Devolver estoque.",
                 pedido_id,

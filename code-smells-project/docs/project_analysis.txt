@@ -1,42 +1,64 @@
 ================================
   PHASE 1: PROJECT ANALYSIS
-  ================================
-  Language:      Python 3 (runtime observed: 3.14)
+================================
+  Analyzed:      2026-08-28
+  Language:      Python >=3.12 (runtime observed: 3.14.7)
   Framework:     Flask 3.1.1
-  Dependencies:  flask-cors 5.0.1
-  Domain:        E-commerce API (produtos, pedidos, usuários, relatórios)
-  Architecture:  Monolítica — pseudo-MVC quebrado; 4 módulos sem camadas claras
-  Source files:  4 files analyzed (app.py, controllers.py, models.py, database.py)
-  Total LOC:     ~780 lines
-  Database:      SQLite (loja.db) via sqlite3 stdlib — sem ORM
+  Dependencies:  flask-cors 5.0.1; itsdangerous 2.2.0
+  Dev tools:     pytest 9.1.1; ruff 0.16.2
+  Domain:        E-commerce API (produtos, usuários, pedidos, relatórios)
+  Database:      SQLite (loja.db) via sqlite3 stdlib, sem ORM
   DB tables:     produtos, usuarios, pedidos, itens_pedido
-  Bind:          0.0.0.0:5003 (debug=True)
-  Tests:         Nenhum
-  ================================================
+  Configuration: Settings imutável carregado de variáveis de ambiente
 
-  STRUCTURE
+  ARCHITECTURE DETECTED BEFORE PHASE 3
+  -----------------------------------
+  O projeto já tinha uma decomposição parcial em MVC com Service Layer, mas
+  ainda possuía regras críticas fora das camadas: autenticação não reutilizável,
+  rotas operacionais sem autorização, commits dentro de Models, validação ad hoc
+  e health/reset acoplados à persistência.
+
+  app.py (entrypoint)
+      -> src.app.create_app() (composition root)
+          -> src.views.routes (registro HTTP)
+              -> src.controllers (adaptação request/response)
+                  -> src.services (regras de negócio)
+                      -> src.models (persistência e mappers)
+                          -> src.db.database / Flask g / SQLite
+
+  FINAL ARCHITECTURE AFTER PHASE 3
+  --------------------------------
+  View (rotas) -> Controller (HTTP) -> Schema (DTO) -> Service (caso de uso)
+  -> Model (SQL parametrizado) -> Database (conexão por request) -> SQLite.
+  `src/domain/pedido.py` concentra estados e transições; `src/middlewares/`
+  concentra autenticação, autorização e erros transversais; `src/config/`
+  concentra ambiente, versão, CORS e credenciais de seed opcionais.
+
+  LAYER MAP
   ---------
-  app.py           Flask app, registro de rotas, endpoints admin inseguros
-  controllers.py   Handlers HTTP (validação + efeitos colaterais + SQL no health)
-  models.py        Acesso a dados + regras de negócio + relatórios (God Module)
-  database.py      Conexão global, schema DDL e seed
+  - View: `src/views/routes.py` registra URLs e encaminha para controllers.
+  - Controller: `src/controllers/` adapta request, autorização e resposta JSON.
+  - Schema: `src/schemas/payloads.py` valida e tipa entradas da aplicação.
+  - Service: `src/services/` executa regras, transações, auth e efeitos laterais.
+  - Domain: `src/domain/pedido.py` define a política de status do pedido.
+  - Model: `src/models/` executa SQL parametrizado e mapeia linhas.
+  - Database: `src/db/database.py` gerencia DDL, seed, migração e lifecycle de `g`.
+  - Middleware: `src/middlewares/` trata auth e erros HTTP de forma transversal.
 
-  CURRENT FLOW
-  ------------
-  HTTP (app.py / controllers.py)
-          │
-          ▼
-    models.py  ← SQL + domínio + reporting
-          │
-          ▼
-  database.get_db()  ← conexão global mutável
-          │
-          ▼
-       loja.db
+  SECURITY AND PERFORMANCE BASELINE
+  ----------------------------------
+  - Secret key ausente gera valor aleatório em desenvolvimento e falha em produção.
+  - Tokens Bearer são assinados, expiram e recarregam o papel atual no banco.
+  - Senhas de seed são opcionais, vêm do ambiente e são hasheadas antes do INSERT.
+  - Criação de pedidos usa `BEGIN IMMEDIATE`, atualização condicional de estoque,
+    agregação de itens duplicados e rollback em qualquer falha.
+  - Pedidos carregam seus itens em lote com `LEFT JOIN`, sem N+1.
+  - CORS só é habilitado para as origens explicitamente configuradas.
 
-  NOTES
-  -----
-  - README indica porta 5000; código usa 5003.
-  - Camada View inexistente (API JSON apenas — esperado para API REST).
-  - "models" não são entidades de domínio; são funções de persistência.
-  ================================================
+  VALIDATION
+  ----------
+  - `.venv/bin/python -m pytest -q`: 17 passed.
+  - `.venv/bin/ruff check .`: clean.
+  - `uv lock --check`: clean.
+  - APIs depreciadas pesquisadas no código executável: nenhuma ocorrência de
+    `datetime.utcnow()`, `Flask.__version__`, `hashlib.md5()` ou `hashlib.sha1()`.

@@ -8,6 +8,7 @@ from typing import Any
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from src.models.usuario_model import UsuarioModel
+from src.schemas.payloads import LoginPayload, SchemaError, UsuarioPayload
 from src.services.errors import DomainError, NotFoundError, UnauthorizedError
 
 logger = logging.getLogger(__name__)
@@ -27,34 +28,34 @@ class UsuarioService:
         return usuario
 
     def criar(self, dados: dict[str, Any] | None) -> int:
-        if not dados:
-            raise DomainError("Dados inválidos")
+        try:
+            payload = UsuarioPayload.from_mapping(dados)
+        except SchemaError as exc:
+            raise DomainError(str(exc)) from exc
 
-        nome = str(dados.get("nome", "")).strip()
-        email = str(dados.get("email", "")).strip()
-        senha = str(dados.get("senha", ""))
-
-        if not nome or not email or not senha:
-            raise DomainError("Nome, email e senha são obrigatórios")
-
-        usuario_id = self._model.criar(nome, email, generate_password_hash(senha))
-        logger.info("Usuário criado: %s", email)
+        try:
+            usuario_id = self._model.criar(
+                payload.nome,
+                payload.email,
+                generate_password_hash(payload.senha),
+            )
+            self._model.commit()
+        except Exception:
+            self._model.rollback()
+            raise
+        logger.info("Usuário criado: %s", payload.email)
         return usuario_id
 
     def login(self, dados: dict[str, Any] | None) -> dict[str, Any]:
-        if not dados:
-            raise DomainError("Dados inválidos")
+        try:
+            payload = LoginPayload.from_mapping(dados)
+        except SchemaError as exc:
+            raise DomainError(str(exc)) from exc
 
-        email = str(dados.get("email", "")).strip()
-        senha = str(dados.get("senha", ""))
-
-        if not email or not senha:
-            raise DomainError("Email e senha são obrigatórios")
-
-        usuario = self._model.buscar_por_email(email)
-        if not usuario or not check_password_hash(usuario["senha"], senha):
-            logger.info("Login falhou: %s", email)
+        usuario = self._model.buscar_por_email(payload.email)
+        if not usuario or not check_password_hash(usuario["senha"], payload.senha):
+            logger.info("Login falhou: %s", payload.email)
             raise UnauthorizedError("Email ou senha inválidos")
 
-        logger.info("Login bem-sucedido: %s", email)
+        logger.info("Login bem-sucedido: %s", payload.email)
         return UsuarioModel.para_login(usuario)

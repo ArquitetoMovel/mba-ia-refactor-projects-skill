@@ -1,16 +1,4 @@
 from datetime import date, datetime, timezone
-import logging
-import re
-
-logger = logging.getLogger(__name__)
-
-
-def format_date(date_obj):
-    if date_obj is None:
-        return None
-    if isinstance(date_obj, datetime):
-        return date_obj.isoformat()
-    return str(date_obj)
 
 
 def calculate_percentage(part, total):
@@ -37,7 +25,3 @@ def to_datetime(value):
     if isinstance(value, date):
         return datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
     return None
-
-
-def is_valid_color(color):
-    return bool(color and re.match(r'^#[0-9A-Fa-f]{6}$', color))
