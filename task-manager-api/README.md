@@ -1,6 +1,6 @@
 # task-manager-api
 
-API de Gerenciamento de Tarefas desenvolvida em Python e Flask, completamente refatorada para o padrão arquitetural **MVC (Model-View-Controller)** com camada de **Serviços de Integração**, validação de contratos via **Schemas (Marshmallow)**, persistência relacional com **SQLAlchemy ORM** e configuração baseada em **12-Factor App**.
+API de Gerenciamento de Tarefas desenvolvida em Python e Flask, refatorada para o padrão arquitetural **MVC (Model-View-Controller)** com camada de **Serviços de Integração**, validação de contratos via **Schemas (Marshmallow)**, **autenticação/autorização obrigatórias via middleware** (`token_required` / `role_required`), transações ACID com rollback automático, persistência relacional com **SQLAlchemy ORM** e configuração baseada em **12-Factor App** (segredo obrigatório com fail-fast em produção).
 
 ---
 
@@ -10,10 +10,12 @@ API de Gerenciamento de Tarefas desenvolvida em Python e Flask, completamente re
 - **Framework Web:** Flask 3.0+
 - **ORM / Persistência:** Flask-SQLAlchemy 3+ / SQLite (`tasks.db`)
 - **Validação e Serialização:** Marshmallow 3+
-- **Autenticação:** Tokens assinados criptograficamente via `itsdangerous.URLSafeTimedSerializer`
+- **Autenticação:** Tokens assinados criptograficamente via `itsdangerous.URLSafeTimedSerializer`, **obrigatoriamente validados** pelos decorators `token_required` / `role_required` (`middlewares/auth.py`) em todos os endpoints protegidos
+- **Autorização:** Matriz de acesso por role (`user`, `manager`, `admin`) + regras de propriedade (self-or-admin) na camada Controller
 - **Criptografia de Senhas:** `werkzeug.security` (hashing com salt via Scrypt/PBKDF2)
 - **Integração de Notificações:** `NotificationService` com suporte a envio SMTP parametrizado
-- **Arquitetura:** MVC + Services + Schemas (DTO) + Centralized Error Middleware + Application Factory
+- **Transações:** Helper `database.transaction()` com commit/rollback automático em todas as escritas
+- **Arquitetura:** MVC + Services + Schemas (DTO) + Centralized Error Middleware + Auth Middleware + Application Factory
 
 ---
 
@@ -38,20 +40,24 @@ task-manager-api/
 │   └── user_views.py              # Rotas de usuários e autenticação (/users e /login)
 ├── controllers/                   # Camada Controller: orquestração de casos de uso e transações
 │   ├── auth_controller.py         # Login e emissão/validação de tokens assinados
-│   ├── category_controller.py     # CRUD e integridade de categorias
-│   ├── report_controller.py       # Agregações de relatórios gerenciais e por usuário
-│   ├── task_controller.py         # Gerenciamento de tarefas, filtros e Eager Loading
-│   └── user_controller.py         # CRUD de usuários e consulta de tarefas por usuário
-├── schemas/                       # Camada Schema (DTO): validação de entrada e serialização
-│   ├── category_schema.py         # Schemas de criação e atualização de categorias
-│   ├── task_schema.py             # Schemas de criação e atualização de tarefas
-│   └── user_schema.py             # Schemas de criação, atualização e login de usuários
+│   ├── category_controller.py     # CRUD e integridade de categorias (nullify em cascade)
+│   ├── report_controller.py       # Agregações de relatórios gerenciais e por usuário (GROUP BY único)
+│   ├── task_controller.py         # Gerenciamento de tarefas, filtros, paginação e Eager Loading
+│   ├── user_authz.py              # Regras de autorização (self-or-admin, role escalation)
+│   └── user_controller.py         # CRUD de usuários, regras self-or-admin e consulta de tarefas
+├── schemas/                       # Camada Schema (DTO): validação de entrada e serialização de resposta
+│   ├── category_schema.py         # Schemas de criação, atualização e resposta de categorias
+│   ├── common_schema.py           # PaginationSchema (page/per_page validado)
+│   ├── task_schema.py             # Schemas de criação, atualização, busca e resposta de tarefas
+│   └── user_schema.py             # Schemas de criação, atualização, login e resposta de usuários
 ├── services/                      # Camada Service: regras de domínio e integrações externas
 │   └── notification_service.py    # Envio de notificações de atribuição/atraso via SMTP
 ├── middlewares/                   # Camada Middleware: tratamento transversal e observabilidade
-│   └── error_handler.py           # Classe AppError, tratadores de erro globais e logging
+│   ├── auth.py                    # Guards token_required / role_required e helpers de sessão
+│   └── error_handler.py           # Classe AppError, tratadores de erro globais (com rollback) e logging
 ├── utils/
-│   └── helpers.py                 # Funções auxiliares (validação de cores hexadecimais)
+│   ├── helpers.py                 # Funções auxiliares puras (tags, datas, percentuais)
+│   └── time.py                    # Fonte única de tempo UTC (utcnow / as_utc)
 ├── docs/                          # Relatórios da refatoração e documentação arquitetural
 │   ├── playbook_refatoracao.md    # Playbook com os 8 padrões de transformação (Antes/Depois)
 │   ├── project_analysis.txt       # Relatório Fase 1 (Stack & Arquitetura)
@@ -76,11 +82,11 @@ task-manager-api/
 | Camada | Diretório | Responsabilidade Principal | O que DEVE Conter |
 |---|---|---|---|
 | **View** | `views/` | Ponto de entrada HTTP e formatação | Blueprints, extração de parâmetros de request, delegação para Controller/Schema, retorno `jsonify` com status code |
-| **Controller** | `controllers/` | Orquestração do caso de uso | Coordenação de fluxo, regras de negócio, transações (`db.session.commit()`), chamadas a serviços |
+| **Controller** | `controllers/` | Orquestração do caso de uso | Coordenação de fluxo, regras de negócio, autorização, transações via `transaction()`, chamadas a serviços |
 | **Service** | `services/` | Regras de integração e efeitos colaterais | Comunicação externa (envio de emails SMTP), desacoplado de requests HTTP |
 | **Model** | `models/` | Entidades de domínio e persistência ORM | Mapeamento de tabelas, relacionamentos, métodos de entidade (`is_overdue()`, `check_password()`) |
 | **Schema** | `schemas/` | Validação de entrada e DTO | Regras de validação (tamanho, formato, obrigatoriedade), tipagem, campos `load_only` |
-| **Middleware** | `middlewares/` | Tratamento transversal de erros | Handler de exceções (`AppError`, `ValidationError`, `IntegrityError`, 500), logging estruturado |
+| **Middleware** | `middlewares/` | Tratamento transversal de erros e autenticação | Guards de acesso (`token_required`, `role_required`), handlers de exceções (`AppError`, `ValidationError`, `IntegrityError` com rollback, 404, 500), logging estruturado |
 | **Config** | `config/` | Configurações do ambiente | Leitura de variáveis de ambiente (`os.getenv`), constantes padrão seguras |
 
 ---
@@ -91,13 +97,15 @@ As configurações são gerenciadas em [config/settings.py](file:///Users/alexan
 
 | Variável | Padrão | Descrição |
 |---|---|---|
-| `HOST` | `127.0.0.1` | Endereço de bind da aplicação |
+| `HOST` | `0.0.0.0` | Endereço de bind da aplicação |
 | `PORT` | `5000` | Porta do servidor HTTP |
-| `DEBUG` | `0` | Modo debug do Flask (`1` para ativo, `0` para inativo) |
-| `SECRET_KEY` | `dev-secret-key-change-in-prod` | Chave de criptografia para assinatura de tokens e sessão |
+| `FLASK_DEBUG` | `0` | Modo debug do Flask (`1` para ativo, `0` para inativo) |
+| `SECRET_KEY` | *(vazio)* | Chave de assinatura de tokens. **Obrigatória em produção** — a aplicação não sobe com chave ausente/fraca (fail-fast). Em `DEBUG`/`TESTS`, uma chave efêmera é gerada com warning. Gere com `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
 | `DATABASE_URL` | `sqlite:///tasks.db` | URI de conexão do SQLAlchemy |
 | `TOKEN_MAX_AGE_SECONDS` | `86400` | Tempo de expiração do token de autenticação (em segundos) |
-| `SMTP_HOST` | `smtp.gmail.com` | Servidor SMTP para envio de notificações |
+| `DEFAULT_PER_PAGE` | `20` | Tamanho de página padrão dos endpoints paginados |
+| `MAX_PER_PAGE` | `100` | Máximo permitido por página |
+| `SMTP_HOST` | `""` | Servidor SMTP para envio de notificações |
 | `SMTP_PORT` | `587` | Porta do servidor SMTP |
 | `SMTP_USER` | `""` | Usuário do servidor SMTP |
 | `SMTP_PASSWORD` | `""` | Senha do servidor SMTP |
@@ -145,10 +153,28 @@ O script [seed.py](file:///Users/alexandre/Developer/mba-ia-refactor-projects-sk
 | Nome | Email | Senha | Role |
 |---|---|---|---|
 | João Silva | `joao@email.com` | `12345678` | `admin` |
-| Maria Souza | `maria@email.com` | `abcd1234` | `user` |
-| Pedro Santos | `pedro@email.com` | `pass1234` | `manager` |
+| Maria Santos | `maria@email.com` | `abcd1234` | `user` |
+| Pedro Oliveira | `pedro@email.com` | `pass1234` | `manager` |
 
 ---
+
+## Autenticação e Autorização
+
+Endpoints protegidos exigem o header `Authorization: Bearer <token>`, obtido via `POST /login` (token assinado com expiração configurável). Requisições sem token válido respondem `401`; sem permissão de role, `403`.
+
+**Matriz de acesso:**
+
+| Scope | Público | `user` autenticado | `manager` | `admin` |
+|---|---|---|---|---|
+| `GET /`, `GET /health`, `POST /login`, `POST /users` (cadastro) | ✅ | ✅ | ✅ | ✅ |
+| `/tasks/*` (CRUD, busca, stats) | — | ✅ | ✅ | ✅ |
+| `GET /users/<id>`, `PUT /users/<id>`, `GET /users/<id>/tasks` (próprio) | — | ✅ | ✅ | ✅ (qualquer um) |
+| `GET /users`, `DELETE /users/<id>` | — | — | — | ✅ |
+| Escrita em `/categories/*` (POST/PUT/DELETE) | — | — | ✅ | ✅ |
+| `GET /categories` | — | ✅ | ✅ | ✅ |
+| `/reports/*` | — | — | ✅ | ✅ |
+
+**Paginação:** `GET /tasks`, `GET /users` e `GET /tasks/search` retornam o envelope `{items, page, per_page, total, pages}` com `?page=` e `?per_page=` (máx. `MAX_PER_PAGE`). Parâmetros inválidos respondem `400`.
 
 ## Endpoints da API
 
@@ -160,50 +186,52 @@ O script [seed.py](file:///Users/alexandre/Developer/mba-ia-refactor-projects-sk
 - `POST /login` — Autenticação de usuário com email e senha. Retorna dados do usuário e token assinado (`token`).
 
 ### 3. Gerenciamento de Usuários
-- `GET /users` — Lista todos os usuários ativos (com contagem de tarefas associadas).
-- `GET /users/<id>` — Detalha um usuário específico.
-- `POST /users` — Cria um novo usuário com validação de email e senha forte.
-- `PUT /users/<id>` — Atualiza dados cadastrais de um usuário.
-- `DELETE /users/<id>` — Remove um usuário da base.
-- `GET /users/<id>/tasks` — Lista todas as tarefas atribuídas ao usuário.
+- `GET /users` — **[admin]** Lista paginada de usuários com contagem de tarefas agregada em uma única query.
+- `GET /users/<id>` — **[self|admin]** Detalha um usuário específico.
+- `POST /users` — Cria um novo usuário com validação de email e senha forte (público).
+- `PUT /users/<id>` — **[self|admin]** Atualiza dados cadastrais; alteração de `role` é exclusiva de admin.
+- `DELETE /users/<id>` — **[admin]** Remove usuário e suas tarefas em transação atômica.
+- `GET /users/<id>/tasks` — **[self|admin]** Lista tarefas atribuídas ao usuário.
 
-### 4. Gerenciamento de Tarefas
-- `GET /tasks` — Lista tarefas com Eager Loading (`joinedload` de usuário e categoria) e cálculo de atraso (`overdue`).
+### 4. Gerenciamento de Tarefas (autenticado)
+- `GET /tasks` — Lista paginada com Eager Loading (`joinedload` de usuário e categoria) e cálculo de atraso (`overdue`).
 - `GET /tasks/<id>` — Detalha uma tarefa específica com seus relacionamentos.
 - `POST /tasks` — Cria uma nova tarefa e dispara notificação de atribuição se configurado.
 - `PUT /tasks/<id>` — Atualiza dados, status, prioridade ou prazo de uma tarefa.
 - `DELETE /tasks/<id>` — Remove uma tarefa.
-- `GET /tasks/search?q=...&status=...&priority=...` — Busca textual em títulos/descrições e filtros compostos.
-- `GET /tasks/stats` — Estatísticas agregadas de tarefas por status e tarefas atrasadas.
+- `GET /tasks/search?q=...&status=...&priority=...&user_id=...` — Busca textual e filtros compostos (validados via schema, paginados).
+- `GET /tasks/stats` — Estatísticas agregadas por status/atraso em consultas `GROUP BY` únicas.
 
 ### 5. Gerenciamento de Categorias
-- `GET /categories` — Lista todas as categorias cadastradas.
-- `POST /categories` — Cria uma nova categoria com validação de cor hexadecimal.
-- `PUT /categories/<id>` — Atualiza nome, descrição ou cor da categoria.
-- `DELETE /categories/<id>` — Remove uma categoria.
+- `GET /categories` — **[autenticado]** Lista categorias com contagem de tarefas agregada em uma única query.
+- `POST /categories` — **[admin|manager]** Cria categoria com validação de cor hexadecimal.
+- `PUT /categories/<id>` — **[admin|manager]** Atualiza nome, descrição ou cor.
+- `DELETE /categories/<id>` — **[admin|manager]** Remove a categoria e desvincula (NULL) as tarefas associadas na mesma transação — sem deixar referências órfãs.
 
 ### 6. Relatórios
-- `GET /reports/summary` — Relatório executivo consolidado com métricas de usuários, tarefas e categorias.
-- `GET /reports/user/<id>` — Relatório analítico detalhado do volume e status de tarefas por usuário.
+- `GET /reports/summary` — **[admin|manager]** Relatório executivo consolidado (agregações SQL, sem full-table loads).
+- `GET /reports/user/<id>` — **[admin|manager]** Relatório analítico de volume e status de tarefas por usuário.
 
 ---
 
 ## Exemplos de Requisições (curl)
 
 ```bash
-# Health Check
+# Health Check (público)
 curl -s http://localhost:5000/health
 
-# Login
-curl -s -X POST http://localhost:5000/login \
+# Login → extrai o token
+TOKEN=$(curl -s -X POST http://localhost:5000/login \
   -H 'Content-Type: application/json' \
-  -d '{"email":"joao@email.com","password":"12345678"}'
+  -d '{"email":"joao@email.com","password":"12345678"}' | python -c "import sys,json; print(json.load(sys.stdin)['token'])")
 
-# Listar Tarefas (com relações carregadas sem N+1)
-curl -s http://localhost:5000/tasks
+# Listar Tarefas paginadas (com relações carregadas sem N+1)
+curl -s "http://localhost:5000/tasks?page=1&per_page=20" \
+  -H "Authorization: Bearer $TOKEN"
 
 # Criar Nova Tarefa
 curl -s -X POST http://localhost:5000/tasks \
+  -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
     "title": "Configurar pipeline de CI/CD",
@@ -212,14 +240,14 @@ curl -s -X POST http://localhost:5000/tasks \
     "status": "in_progress",
     "user_id": 1,
     "category_id": 1,
-    "due_date": "2026-12-31T23:59:59Z"
+    "due_date": "2026-12-31"
   }'
 
 # Estatísticas de Tarefas
-curl -s http://localhost:5000/tasks/stats
+curl -s http://localhost:5000/tasks/stats -H "Authorization: Bearer $TOKEN"
 
-# Relatório Gerencial Consolidado
-curl -s http://localhost:5000/reports/summary
+# Relatório Gerencial Consolidado (role admin/manager)
+curl -s http://localhost:5000/reports/summary -H "Authorization: Bearer $TOKEN"
 ```
 
 ---

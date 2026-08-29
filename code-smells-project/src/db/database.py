@@ -9,7 +9,7 @@ from pathlib import Path
 from flask import Flask, g
 from werkzeug.security import generate_password_hash
 
-from src.config.settings import Settings, load_settings
+from src.config.settings import SeedUser, Settings, load_settings
 
 logger = logging.getLogger(__name__)
 
@@ -87,11 +87,8 @@ def _create_schema(conn: sqlite3.Connection) -> None:
     )
 
 
-def _seed_if_empty(conn: sqlite3.Connection) -> None:
+def _seed_if_empty(conn: sqlite3.Connection, seed_users: tuple[SeedUser, ...] = ()) -> None:
     count = conn.execute("SELECT COUNT(*) FROM produtos").fetchone()[0]
-    if count > 0:
-        return
-
     produtos = [
         ("Notebook Gamer", "Notebook potente para jogos", 5999.99, 10, "informatica"),
         ("Mouse Wireless", "Mouse sem fio ergonômico", 89.90, 50, "informatica"),
@@ -104,23 +101,24 @@ def _seed_if_empty(conn: sqlite3.Connection) -> None:
         ("SSD 1TB", "SSD NVMe 1TB", 449.90, 35, "informatica"),
         ("Camiseta Dev", "Camiseta estampa código", 59.90, 100, "vestuario"),
     ]
-    conn.executemany(
-        "INSERT INTO produtos (nome, descricao, preco, estoque, categoria) "
-        "VALUES (?, ?, ?, ?, ?)",
-        produtos,
-    )
+    if count == 0:
+        conn.executemany(
+            "INSERT INTO produtos (nome, descricao, preco, estoque, categoria) "
+            "VALUES (?, ?, ?, ?, ?)",
+            produtos,
+        )
 
-    usuarios = [
-        ("Admin", "admin@loja.com", generate_password_hash("admin123"), "admin"),
-        ("João Silva", "joao@email.com", generate_password_hash("123456"), "cliente"),
-        ("Maria Santos", "maria@email.com", generate_password_hash("senha123"), "cliente"),
-    ]
-    conn.executemany(
-        "INSERT INTO usuarios (nome, email, senha, tipo) VALUES (?, ?, ?, ?)",
-        usuarios,
-    )
-    conn.commit()
-    logger.info("Database seeded with sample products and users")
+    user_count = conn.execute("SELECT COUNT(*) FROM usuarios").fetchone()[0]
+    if user_count == 0 and seed_users:
+        hashed_users = [
+            (name, email, generate_password_hash(password), role)
+            for name, email, password, role in seed_users
+        ]
+        conn.executemany(
+            "INSERT INTO usuarios (nome, email, senha, tipo) VALUES (?, ?, ?, ?)",
+            hashed_users,
+        )
+        logger.info("Database seeded with configured sample users")
 
 
 def _migrate_plaintext_passwords(conn: sqlite3.Connection) -> None:
@@ -137,7 +135,6 @@ def _migrate_plaintext_passwords(conn: sqlite3.Connection) -> None:
         )
         updated += 1
     if updated:
-        conn.commit()
         logger.info("Migrated %s plaintext password(s) to hashes", updated)
 
 
@@ -149,17 +146,19 @@ def init_db(settings: Settings | None = None) -> None:
     conn.execute("PRAGMA foreign_keys = ON")
     try:
         _create_schema(conn)
-        _seed_if_empty(conn)
+        _seed_if_empty(conn, settings.seed_users)
         _migrate_plaintext_passwords(conn)
         conn.commit()
     finally:
         conn.close()
 
 
-def reset_all_data(conn: sqlite3.Connection) -> None:
+def reset_all_data(
+    conn: sqlite3.Connection,
+    seed_users: tuple[SeedUser, ...] = (),
+) -> None:
     conn.execute("DELETE FROM itens_pedido")
     conn.execute("DELETE FROM pedidos")
     conn.execute("DELETE FROM produtos")
     conn.execute("DELETE FROM usuarios")
-    conn.commit()
-    _seed_if_empty(conn)
+    _seed_if_empty(conn, seed_users)

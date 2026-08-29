@@ -5,8 +5,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from src.config.settings import CATEGORIAS_VALIDAS
 from src.models.produto_model import ProdutoModel
+from src.schemas.payloads import ProdutoPayload, SchemaError
 from src.services.errors import DomainError, NotFoundError
 
 logger = logging.getLogger(__name__)
@@ -27,22 +27,50 @@ class ProdutoService:
             raise NotFoundError("Produto não encontrado")
         return produto
 
-    def criar(self, dados: dict[str, Any]) -> int:
+    def criar(self, dados: dict[str, Any] | None) -> int:
         payload = self._validar_payload(dados)
-        produto_id = self._model.criar(**payload)
+        try:
+            produto_id = self._model.criar(
+                payload.nome,
+                payload.descricao,
+                payload.preco,
+                payload.estoque,
+                payload.categoria,
+            )
+            self._model.commit()
+        except Exception:
+            self._model.rollback()
+            raise
         logger.info("Produto criado com ID: %s", produto_id)
         return produto_id
 
-    def atualizar(self, produto_id: int, dados: dict[str, Any]) -> None:
+    def atualizar(self, produto_id: int, dados: dict[str, Any] | None) -> None:
         if not self._model.buscar_por_id(produto_id):
             raise NotFoundError("Produto não encontrado")
         payload = self._validar_payload(dados)
-        self._model.atualizar(produto_id, **payload)
+        try:
+            self._model.atualizar(
+                produto_id,
+                payload.nome,
+                payload.descricao,
+                payload.preco,
+                payload.estoque,
+                payload.categoria,
+            )
+            self._model.commit()
+        except Exception:
+            self._model.rollback()
+            raise
 
     def deletar(self, produto_id: int) -> None:
         if not self._model.buscar_por_id(produto_id):
             raise NotFoundError("Produto não encontrado")
-        self._model.deletar(produto_id)
+        try:
+            self._model.deletar(produto_id)
+            self._model.commit()
+        except Exception:
+            self._model.rollback()
+            raise
         logger.info("Produto %s deletado", produto_id)
 
     def buscar(
@@ -54,39 +82,8 @@ class ProdutoService:
     ) -> list[dict[str, Any]]:
         return self._model.buscar(termo, categoria, preco_min, preco_max)
 
-    def _validar_payload(self, dados: dict[str, Any] | None) -> dict[str, Any]:
-        if not dados:
-            raise DomainError("Dados inválidos")
-        for campo in ("nome", "preco", "estoque"):
-            if campo not in dados:
-                label = {"nome": "Nome", "preco": "Preço", "estoque": "Estoque"}[campo]
-                raise DomainError(f"{label} é obrigatório")
-
-        nome = str(dados["nome"])
-        descricao = str(dados.get("descricao", ""))
+    def _validar_payload(self, dados: dict[str, Any] | None) -> ProdutoPayload:
         try:
-            preco = float(dados["preco"])
-            estoque = int(dados["estoque"])
-        except (TypeError, ValueError) as exc:
-            raise DomainError("Preço ou estoque inválidos") from exc
-
-        categoria = str(dados.get("categoria", "geral"))
-
-        if preco < 0:
-            raise DomainError("Preço não pode ser negativo")
-        if estoque < 0:
-            raise DomainError("Estoque não pode ser negativo")
-        if len(nome) < 2:
-            raise DomainError("Nome muito curto")
-        if len(nome) > 200:
-            raise DomainError("Nome muito longo")
-        if categoria not in CATEGORIAS_VALIDAS:
-            raise DomainError(f"Categoria inválida. Válidas: {list(CATEGORIAS_VALIDAS)}")
-
-        return {
-            "nome": nome,
-            "descricao": descricao,
-            "preco": preco,
-            "estoque": estoque,
-            "categoria": categoria,
-        }
+            return ProdutoPayload.from_mapping(dados)
+        except SchemaError as exc:
+            raise DomainError(str(exc)) from exc

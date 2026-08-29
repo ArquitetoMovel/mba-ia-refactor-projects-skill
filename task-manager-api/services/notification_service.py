@@ -52,14 +52,5 @@ class NotificationService:
         )
         self.send_email(user.email, subject, body)
 
-    def notify_task_overdue(self, user, task):
-        subject = f'Task atrasada: {task.title}'
-        body = (
-            f'Olá {user.name},\n\n'
-            f"A task '{task.title}' está atrasada!\n\n"
-            f'Data limite: {task.due_date}'
-        )
-        self.send_email(user.email, subject, body)
-
 
 notification_service = NotificationService()

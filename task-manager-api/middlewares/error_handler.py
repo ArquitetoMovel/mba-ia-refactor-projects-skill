@@ -1,5 +1,6 @@
 import logging
 
+from database import db
 from flask import jsonify
 from marshmallow import ValidationError
 from sqlalchemy.exc import IntegrityError
@@ -31,6 +32,7 @@ def register_error_handlers(app):
 
     @app.errorhandler(IntegrityError)
     def handle_integrity_error(error):
+        db.session.rollback()
         logger.exception('Integrity error')
         return jsonify({'error': 'Conflito de dados'}), 409
 
@@ -40,5 +42,6 @@ def register_error_handlers(app):
 
     @app.errorhandler(500)
     def handle_internal_error(error):
+        db.session.rollback()
         logger.exception('Internal server error')
         return jsonify({'error': 'Erro interno'}), 500

@@ -8,9 +8,9 @@ API RESTful de E-commerce em Python/Flask, refatorada a partir de uma base de c�
 
 O projeto passou por uma refatoração arquitetural completa e saneamento de segurança (v2.0.0):
 - **Arquitetura em Camadas:** Separação estrita de responsabilidades entre Views (Rotas), Controllers (Adapters HTTP), Services (Regras de Negócio e Domínio) e Models (Persistência e Mappers).
-- **Segurança da Informação:** Eliminação de injeção de SQL via queries 100% parametrizadas (`?`), hashing seguro de senhas com Werkzeug (`scrypt`/`pbkdf2`), proteção contra vazamento de senhas em endpoints e remoção de endpoints administrativos inseguros (`/admin/query`).
+- **Segurança da Informação:** Eliminação de injeção de SQL via queries 100% parametrizadas (`?`), hashing seguro de senhas com Werkzeug (`scrypt`/`pbkdf2`), tokens Bearer assinados e temporizados, autorização por papel, proteção contra vazamento de senhas e remoção de endpoints administrativos inseguros (`/admin/query`).
 - **Gerenciamento de Recursos:** Conexões com banco SQLite gerenciadas por ciclo de vida da requisição via Flask `g` (`teardown_appcontext`) e eliminação de queries N+1 no carregamento de pedidos e itens.
-- **Configuração 12-Factor:** Configurações e segredos externalizados via variáveis de ambiente com validação centralizada.
+- **Configuração 12-Factor:** Configurações, segredos, origens CORS e credenciais de seed externalizados via variáveis de ambiente com validação centralizada.
 
 ---
 
@@ -24,7 +24,8 @@ O projeto passou por uma refatoração arquitetural completa e saneamento de seg
 | Banco de Dados | SQLite | Conexão escopada por requisição (`g.db`) |
 | Persistência | sqlite3 | Queries SQL parametrizadas sem ORM |
 | Segurança de Senhas | Werkzeug Security | Hashes com salt at rest |
-| Testes Automatizados | pytest | `tests/unit`, `tests/integration` (9 testes ativos) |
+| Autenticação | itsdangerous | Tokens Bearer assinados e temporizados |
+| Testes Automatizados | pytest | `tests/unit`, `tests/integration` (17 testes ativos) |
 
 ---
 
@@ -59,7 +60,7 @@ uv sync
 uv run python app.py
 ```
 
-A API iniciará no endereço `http://127.0.0.1:5003`. O banco de dados SQLite (`loja.db`) é inicializado e populado automaticamente com produtos e usuários no boot da aplicação.
+A API iniciará no endereço `http://127.0.0.1:5003`. O banco de dados SQLite (`loja.db`) é inicializado com produtos; usuários de desenvolvimento só são criados quando as variáveis de seed estão configuradas.
 
 ---
 
@@ -69,13 +70,18 @@ Todas as configurações podem ser sobrescritas via variáveis de ambiente:
 
 | Variável | Padrão | Descrição |
 |----------|--------|-----------|
-| `SECRET_KEY` | `dev-only-change-me` | Chave secreta da aplicação Flask |
+| `SECRET_KEY` | Gerada aleatoriamente em desenvolvimento | Chave com pelo menos 32 caracteres obrigatória em produção |
 | `FLASK_DEBUG` | `0` | `1` para modo debug ativo |
 | `HOST` | `127.0.0.1` | Endereço de bind do servidor |
 | `PORT` | `5003` | Porta de escuta HTTP |
 | `DB_PATH` | `loja.db` | Caminho do arquivo SQLite |
 | `AMBIENTE` | `desenvolvimento` | Identificador de ambiente exibido no `/health` |
 | `ADMIN_TOKEN` | _(vazio)_ | Token exigido no header `X-Admin-Token` para `POST /admin/reset-db` |
+| `AUTH_TOKEN_MAX_AGE_SECONDS` | `86400` | Tempo de validade dos tokens Bearer |
+| `CORS_ORIGINS` | _(desabilitado)_ | Origens permitidas, separadas por vírgula |
+| `SEED_ADMIN_PASSWORD` | _(não semeia)_ | Senha do usuário admin de desenvolvimento |
+| `SEED_JOAO_PASSWORD` | _(não semeia)_ | Senha do usuário cliente de desenvolvimento |
+| `SEED_MARIA_PASSWORD` | _(não semeia)_ | Senha do usuário cliente de desenvolvimento |
 
 ---
 
@@ -93,11 +99,13 @@ code-smells-project/
 │   ├── project_analysis.txt   # Fase 1: Análise de Stack e Arquitetura inicial
 │   ├── project_issues.txt     # Fase 2: Diagnóstico de Code Smells e Riscos
 │   ├── project_refactored.txt # Fase 3: Resumo das transformações aplicadas
-│   └── playbook_refatoracao.md# Playbook com os 8 padrões de transformação
+│   └── playbook_refatoracao.md # Playbook com os 8 padrões de transformação
 ├── src/                       # Código-fonte refatorado (MVC + Services)
 │   ├── app.py                 # App factory (create_app) e registro de rotas
 │   ├── config/                # Módulo de configurações e Settings
 │   │   └── settings.py
+│   ├── domain/                # Políticas de domínio compartilhadas
+│   │   └── pedido.py          # Estados e transições de pedidos
 │   ├── controllers/           # Adaptadores HTTP (request/response/status)
 │   │   ├── health_controller.py
 │   │   ├── pedido_controller.py
@@ -106,7 +114,8 @@ code-smells-project/
 │   │   └── usuario_controller.py
 │   ├── db/                    # Inicialização, schema DDL, seed e lifecycle
 │   │   └── database.py
-│   ├── middlewares/           # Handlers centralizados de exceções HTTP
+│   ├── middlewares/           # Auth e handlers de exceções HTTP
+│   │   ├── auth.py
 │   │   └── error_handler.py
 │   ├── models/                # Persistência SQL parametrizada e mappers
 │   │   ├── mappers.py
@@ -114,21 +123,26 @@ code-smells-project/
 │   │   ├── produto_model.py
 │   │   ├── relatorio_model.py
 │   │   └── usuario_model.py
+│   ├── schemas/               # DTOs e validação de payloads
+│   │   └── payloads.py
 │   ├── services/              # Camada de regras de negócio puras
 │   │   ├── errors.py
+│   │   ├── auth_service.py    # Tokens assinados e validação
+│   │   ├── health_service.py  # Healthcheck e reset administrativo
 │   │   ├── notificacao_service.py
 │   │   ├── pedido_service.py
 │   │   ├── produto_service.py
 │   │   ├── relatorio_service.py
 │   │   └── usuario_service.py
-│   └── views/                 # Registro e roteamento de Blueprints
+│   └── views/                 # Registro e roteamento de rotas
 │       └── routes.py
 └── tests/                     # Suíte de testes automatizados
     ├── conftest.py
     ├── integration/           # Testes de integração de rotas e segurança
     │   └── test_api.py
-    └── unit/                  # Testes unitários de serviços
-        └── test_relatorio_service.py
+     └── unit/                  # Testes unitários de serviços
+         ├── test_relatorio_service.py
+         └── test_settings.py
 ```
 
 ---
@@ -146,6 +160,9 @@ View (`src/views/routes.py`)
     v
 Controller (`src/controllers/`)
     |  (Parsing de parâmetros, validação de formato e status HTTP)
+    v
+Schema (`src/schemas/`, quando há payload)
+    |
     v
 Service (`src/services/`)
     |  (Regras de negócio, descontos, validação de estoque, regras de autenticação)
@@ -178,28 +195,31 @@ Base URL: `http://127.0.0.1:5003`
 |--------|----------|-----------|
 | `GET` | `/produtos` | Lista produtos (filtros opcionais: `categoria`, `busca`) |
 | `GET` | `/produtos/<id>` | Detalhes de um produto específico |
-| `POST` | `/produtos` | Criação de novo produto |
-| `PUT` | `/produtos/<id>` | Atualização de produto existente |
-| `DELETE` | `/produtos/<id>` | Remoção de produto |
+| `POST` | `/produtos` | Criação de novo produto (Bearer admin) |
+| `PUT` | `/produtos/<id>` | Atualização de produto existente (Bearer admin) |
+| `DELETE` | `/produtos/<id>` | Remoção de produto (Bearer admin) |
 
 ### Usuários e Autenticação
 
 | Método | Endpoint | Descrição |
 |--------|----------|-----------|
-| `GET` | `/usuarios` | Lista usuários (senhas omitidas) |
-| `GET` | `/usuarios/<id>` | Detalhes de um usuário específico (senhas omitidas) |
+| `GET` | `/usuarios` | Lista usuários (Bearer admin; senhas omitidas) |
+| `GET` | `/usuarios/<id>` | Detalhes do próprio usuário ou de qualquer usuário (Bearer) |
 | `POST` | `/usuarios` | Cadastro de novo usuário com senha hasheada |
 | `POST` | `/login` | Autenticação com e-mail e senha via verificação de hash |
+
+O login devolve um token Bearer assinado em `dados.token`. Envie-o no header
+`Authorization: Bearer <token>` para endpoints protegidos.
 
 ### Pedidos e Vendas
 
 | Método | Endpoint | Descrição |
 |--------|----------|-----------|
-| `GET` | `/pedidos` | Lista pedidos com itens carregados em consulta otimizada (sem N+1) |
-| `GET` | `/pedidos/<id>` | Detalhes de um pedido específico com seus itens |
-| `POST` | `/pedidos` | Criação de pedido com validação de estoque e cálculo de total |
-| `PUT` | `/pedidos/<id>/status` | Atualização de status (`pendente`, `aprovado`, `enviado`, `entregue`, `cancelado`) |
-| `GET` | `/relatorios/vendas` | Relatório consolidado com cálculo de descontos por faixa e métricas |
+| `GET` | `/pedidos` | Lista todos os pedidos (Bearer admin), com itens em lote |
+| `GET` | `/pedidos/usuario/<id>` | Lista pedidos próprios (Bearer) ou de qualquer usuário (Bearer admin) |
+| `POST` | `/pedidos` | Criação de pedido (Bearer; estoque reservado atomicamente) |
+| `PUT` | `/pedidos/<id>/status` | Atualização de status (Bearer admin; transições validadas) |
+| `GET` | `/relatorios/vendas` | Relatório consolidado (Bearer admin) |
 
 ### Administração
 
@@ -212,13 +232,11 @@ Base URL: `http://127.0.0.1:5003`
 
 ## 8. Dados de Seed (Desenvolvimento)
 
-Ao iniciar pela primeira vez, o banco é populado com as seguintes credenciais padrão (senhas armazenadas com hash):
-
-| E-mail | Senha (Plaintext) | Tipo / Permissão |
-|--------|-------------------|------------------|
-| `admin@loja.com` | `admin123` | `admin` |
-| `joao@email.com` | `123456` | `cliente` |
-| `maria@email.com` | `senha123` | `cliente` |
+Os produtos são semeados automaticamente. Usuários só são criados quando as
+variáveis `SEED_ADMIN_PASSWORD`, `SEED_JOAO_PASSWORD` e/ou `SEED_MARIA_PASSWORD`
+forem configuradas; as senhas são hasheadas antes da persistência. Isso evita
+credenciais conhecidas no código ou em ambientes de produção. Use credenciais
+temporárias apenas em desenvolvimento/testes.
 
 Categorias padrão: `informatica`, `moveis`, `vestuario`, `geral`, `eletronicos`, `livros`.
 
@@ -226,7 +244,9 @@ Categorias padrão: `informatica`, `moveis`, `vestuario`, `geral`, `eletronicos`
 
 ## 9. Execução de Testes Automatizados
 
-A suíte inclui testes unitários e de integração validando integridade de regras, sanitização SQL, prevenção de vazamento de segredos e endpoints administrativos:
+A suíte inclui testes unitários e de integração validando regras de domínio,
+autorização, transações de estoque, sanitização SQL, prevenção de vazamento de
+segredos e endpoints administrativos:
 
 ```bash
 # Executar suíte completa de testes

@@ -1,10 +1,6 @@
-from datetime import datetime, timezone
-
+from config.settings import Settings
 from database import db
-
-
-def utcnow():
-    return datetime.now(timezone.utc)
+from utils.time import utcnow
 
 
 class Category(db.Model):
@@ -13,7 +9,7 @@ class Category(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
     description = db.Column(db.String(300), nullable=True)
-    color = db.Column(db.String(7), default='#000000')
+    color = db.Column(db.String(7), default=Settings.DEFAULT_COLOR)
     created_at = db.Column(db.DateTime, default=utcnow)
 
     def to_dict(self, task_count=None):

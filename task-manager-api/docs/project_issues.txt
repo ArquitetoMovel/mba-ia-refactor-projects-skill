@@ -1,118 +1,154 @@
 ================================
-PHASE 2: CODE SMELLS DETECTION
+PHASE 2: CODE SMELLS DETECTION (re-audit pós-refactor MVC)
 ================================
-
-Code Smells Detected:
-- God Object / Fat Controller: routes concentrando CRUD + regras + serialização
-- Long Method: get_tasks, summary_report, create_user, update_task, get_user_tasks
-- Duplicated Code: checagem de overdue, validação de status/priority/email (3+ locais)
-- Feature Envy: routes acessam profundamente campos de Model em vez de to_dict/helpers
-- Dead Code: NotificationService não referenciado; helpers.process_task_data não usado pelas routes
-- Shotgun Surgery: alterar regra de overdue exige mudanças em task_routes, user_routes, report_routes
-- Insecure / Deprecated Crypto: MD5 para senhas; datetime.utcnow() deprecated (Py 3.12+)
-
-Architecture Issues Detected:
-- Incomplete MVC / Lack of Separation of Concerns (lógica de negócio nas routes)
-- Tight Coupling (routes → db.session + models direto, sem service/controller)
-- Hardcoded Secrets (SECRET_KEY, credenciais SMTP)
-- Password Leakage via User.to_dict()
-- Fake Authentication (token JWT fictício)
-- N+1 Queries em GET /tasks
-- Misplaced Responsibilities (CRUD de categories em report_routes)
-- Poor Error Handling (bare except, print em vez de logger)
-- Unused Dependencies (marshmallow, requests, python-dotenv)
+Method: static read of all 31 source files + runtime evidence via Flask
+test_client (unauthenticated access, forged token with default SECRET_KEY,
+LegacyAPIWarning, 500 on /tasks/search?priority=abc).
+Findings: 12 (2 Critical, 3 High, 5 Medium, 2 Low)
 
 ------------------------------------------------
 FINDINGS (ordered by severity)
 ------------------------------------------------
 
-[CRITICAL] Hardcoded secrets
-  Location: app.py:13 (SECRET_KEY); services/notification_service.py:7-10 (SMTP user/password)
-  Description: Credenciais e chave secreta embutidas no código-fonte. Exposição
-  em repositório compromete a aplicação e serviços externos.
+[CRITICAL] Broken access control — authentication never enforced
+  file: controllers/auth_controller.py   line: 18-25
+  file: app.py                           line: 26-34
+  file: views/user_views.py              line: 10-40
+  file: views/task_views.py              line: 9-49
+  file: views/category_views.py          line: 9-29
+  file: views/report_views.py            line: 8-15
+  symbol: AuthController.verify_token (never called); all blueprints
+  description: Login emite token assinado, mas nenhum endpoint o valida —
+  verify_token() nao e referenciado fora do proprio controller e nao existe
+  decorator/middleware token_required. Confirmado em runtime: GET /users,
+  GET /reports/summary e DELETE /users/1 respondem 200/404 sem qualquer
+  credencial. PII (emails, roles) exposta e destruicao de dados aberta a
+  qualquer cliente. Roles (admin/manager) persistidas mas jamais aplicadas.
 
-[CRITICAL] Insecure password hashing (MD5) + password exposed in API
-  Location: models/user.py:21 (to_dict inclui password); models/user.py:27-32 (MD5)
-  Description: MD5 é criptograficamente inadequado para senhas. Além disso,
-  User.to_dict() devolve o hash da senha em respostas HTTP (login, GET user, create/update).
+[CRITICAL] Weak hardcoded fallback SECRET_KEY — token forgery
+  file: config/settings.py               line: 8
+  symbol: Settings.SECRET_KEY
+  description: SECRET_KEY cai no default publico 'change-me-in-production'
+  quando a env nao esta definida; .env versionado no deploy repete o mesmo
+  valor. Como AuthController assina tokens com esse segredo, um atacante que
+  conheca o default (esta no codigo-fonte e no .env.example) forja tokens de
+  qualquer user_id — comprovado em runtime: URLSafeTimedSerializer com a chave
+  default desserializa token forjado com sucesso. Falha de release blocker.
 
-[CRITICAL] Fake authentication / no real authorization
-  Location: routes/user_routes.py:185-211
-  Description: Login retorna 'fake-jwt-token-' + user.id. Nenhum endpoint protege
-  recursos; roles (admin/manager) existem no model mas não são aplicados.
+[HIGH] Missing transaction boundaries — no rollback on commit failures
+  file: controllers/user_controller.py   line: 36-37, 61, 70-72
+  file: controllers/task_controller.py   line: 60-61, 94, 103-104
+  file: controllers/category_controller.py line: 23-24, 40, 50
+  file: middlewares/error_handler.py     line: 32-35
+  symbol: *.commit(); handle_integrity_error
+  description: Todo fluxo de escrita usa db.session.commit() avulso, sem
+  try/except com db.session.rollback(). Um IntegrityError/OperationalError no
+  commit deixa a sessão suja e contamina pedidos subsequentes do mesmo worker
+  até restart. O handler de IntegrityError responde 409 mas nunca faz rollback,
+  e delete_user (linhas 70-72) executa 2 operações multi-tabela sem limite
+  transacional atomico declarado.
 
-[CRITICAL] God routes / Fat Controllers (violação total de MVC)
-  Location: routes/task_routes.py, routes/user_routes.py, routes/report_routes.py
-  Description: Rotas misturam HTTP handling, validação, regras de negócio,
-  queries e serialização. Não há camada Controller/Service efetiva. services/
-  existe mas NotificationService nunca é chamado.
+[HIGH] N+1 queries e full-table loads em leitura
+  file: controllers/user_controller.py   line: 9-11
+  file: models/user.py                   line: 32-33
+  file: controllers/category_controller.py line: 10-14
+  file: controllers/report_controller.py line: 32, 52-53
+  file: controllers/task_controller.py   line: 130
+  symbol: list_users, list_categories, ReportController.summary, TaskController.stats
+  description: (a) list_users dispara lazy-load da relacao tasks para cada
+  usuario (len(self.tasks)) — 1+N queries; (b) list_categories executa um
+  COUNT por categoria; (c) ReportController.summary carrega a tabela tasks
+  inteira em memoria para filtrar overdue e ainda roda uma query de tasks por
+  usuario no loop; (d) TaskController.stats faz Task.query.all() somente para
+  contar atrasadas. Degrada linearmente com volume de dados.
 
-[HIGH] Lack of Separation of Concerns / Incomplete MVC
-  Location: Estrutura geral (models/ + routes/ apenas)
-  Description: Models fazem persistência + serialização + validação parcial.
-  Routes atuam como View+Controller+Service. Não há Views/Schemas dedicados
-  apesar de marshmallow estar em requirements.txt.
+[HIGH] Orphan references — delete_category sem cascade/nullify
+  file: controllers/category_controller.py line: 43-51
+  file: models/task.py                   line: 19
+  symbol: CategoryController.delete_category
+  description: Excluir uma categoria nao limpa tasks.category_id: SQLite nao
+  impoe FK por default e nao ha cascade manual (ao contrario de delete_user,
+  que apaga tasks). Restam tarefas apontando para categoria inexistente —
+  relatorios e joins produzem dados zumbi. Mesma ausencia de salvaguarda vale
+  para o delete em massa de tasks em delete_user sem validacao previa.
 
-[HIGH] Duplicated overdue / status / priority / email validation (Shotgun Surgery)
-  Location: task_routes.py:30-39,65-80; user_routes.py:171-180; report_routes.py:33-43,132-135;
-            models/task.py:50-60; utils/helpers.py:19-23,74-89; user_routes.py:61,106
-  Description: Mesma lógica de overdue e validações copiada em vários pontos.
-  Mudança de regra exige edições espalhadas e inconsistentes.
+[MEDIUM] Poor error handling — 500 em input invalido de query string
+  file: controllers/task_controller.py   line: 107-121
+  file: views/task_views.py              line: 37-44
+  symbol: TaskController.search_tasks
+  description: int(priority) e int(user_id) sem validacao lancam ValueError
+  nao tratado (confirmado em runtime: GET /tasks/search?priority=abc -> 500).
+  Erro de cliente deveria ser 400 com mensagem clara; hoje vaza como erro
+  interno. A visao passa args crus sem coercao/sanitizacao via schema.
 
-[HIGH] N+1 queries on GET /tasks
-  Location: routes/task_routes.py:14-59
-  Description: Para cada task, faz User.query.get e Category.query.get
-  individualmente em vez de joinedload/eager loading.
+[MEDIUM] Dead code e schemas/helpers nunca utilizados
+  file: schemas/task_schema.py           line: 28-30 (no-op normalize_tags)
+  file: schemas/user_schema.py           line: 45-57 (ResponseSchema sem uso)
+  file: schemas/task_schema.py           line: 49-67 (ResponseSchema sem uso)
+  file: schemas/category_schema.py       line: 27-37 (ResponseSchema sem uso)
+  file: models/task.py                   line: 48-55 (validate_status/validate_priority)
+  file: utils/helpers.py                 line: 8-13, 42-43 (format_date, is_valid_color)
+  file: services/notification_service.py line: 55-62 (notify_task_overdue)
+  symbol: ver lista
+  description: Respostas sao serializadas por to_dict() e os ResponseSchemas
+  Marshmallow sao instanciados/exportados porem jamais usados nas views;
+  pre_load que nao faz nada; validadores no Model redundantes com Schema e
+  nunca chamados; helpers e notify_task_overdue optados por ninguem. Polui o
+  build e mascara as reais fontes de verdade.
 
-[HIGH] Global mutable in-memory state
-  Location: services/notification_service.py:6 (self.notifications = [])
-  Description: Notificações guardadas em lista em memória da instância;
-  perde-se no restart e não escala. Serviço ainda não integrado às rotas.
+[MEDIUM] Undeclared direct dependencies (fragile build)
+  file: requirements.txt                 line: 1-5
+  file: controllers/auth_controller.py   line: 1
+  file: controllers/task_controller.py   line: 3
+  symbol: itsdangerous, sqlalchemy
+  description: O codigo importa itsdangerous e sqlalchemy diretamente, mas
+  requirements.txt nao os declaram — funcionam apenas como dependencia
+  transitiva do Flask/Flask-SQLAlchemy. Um bump de Flask pode quebrar o build
+  em silencio. Inverso: venv tem requests instalado sem uso nem declaracao.
 
-[MEDIUM] Long methods / complex procedures in routes
-  Location: task_routes.get_tasks (~50 LOC), report_routes.summary_report (~90 LOC),
-            user_routes.create_user / update_user, task_routes.create_task / update_task
-  Description: Métodos longos com múltiplas responsabilidades dificultam testes
-  e leitura.
+[MEDIUM] Duplicated code / Shotgun Surgery residual
+  file: models/user.py                   line: 8-9
+  file: models/task.py                   line: 6-7
+  file: models/category.py               line: 6-7 (utcnow() x3)
+  file: models/task.py                   line: 62-64
+  file: controllers/report_controller.py line: 34-36 (fix naive->UTC x2)
+  file: controllers/task_controller.py   line: 125-129
+  file: controllers/report_controller.py line: 17-20 (contagens por status x2)
+  file: controllers/user_controller.py   line: 82-93 (dict manual duplica Task.to_dict)
+  symbol: utcnow, is_overdue, stats/summary
+  description: helper utcnow() copiado nos 3 models; a correcao timezone-aware
+  de due_date esta em Task.is_overdue e reimplementada no relatorio; as
+  agregacoes por status existem em dois controllers; get_user_tasks monta na
+  mao um dicionario quase identico a Task.to_dict(). Muda a regra -> cauldron
+  de edicoes espalhadas.
 
-[MEDIUM] Misplaced category CRUD inside report_routes
-  Location: routes/report_routes.py:157-223
-  Description: Endpoints /categories convivem com /reports, misturando domínios
-  e dificultando navegação/manutenção.
+[MEDIUM] Unbounded list endpoints (sem paginacao)
+  file: controllers/task_controller.py   line: 16-21
+  file: controllers/user_controller.py   line: 9-11
+  file: views/task_views.py              line: 9-11
+  symbol: list_tasks, list_users
+  description: GET /tasks e GET /users retornam a tabela inteira; sem
+  limit/offset ou pagina baseada em cursor. O proprio seed cadastra 'Adicionar
+  paginação na API' como divida. Risco de memoria/latencia com crescimento.
 
-[MEDIUM] Dead / unused code and dependencies
-  Location: services/notification_service.py (não importado); utils/helpers.py
-            process_task_data (não usado pelas routes); requirements: marshmallow,
-            requests, python-dotenv; imports ociosos (json, os, sys, hashlib) em
-            app.py, task_routes.py, user_routes.py, helpers.py
-  Description: Código morto e deps não usadas aumentam ruído e falsa confiança
-  em capacidades (ex.: marshmallow “parece” usado).
+[LOW] Deprecated API — SQLAlchemy Query.get() legacy
+  file: controllers/user_controller.py   line: 15, 42, 66, 77
+  file: controllers/task_controller.py   line: 25, 34, 41, 70, 99
+  file: controllers/category_controller.py line: 29, 45
+  file: controllers/report_controller.py line: 91
+  symbol: Model.query.get()
+  description: Runtime emite LegacyAPIWarning (SQLAlchemy 2.0): Query.get() e
+  legado e sera removido; deve-se usar db.session.get(Model, pk). Sem fix,
+  upgrade maior de SQLAlchemy quebra os controllers.
 
-[MEDIUM] Poor error handling and logging
-  Location: task_routes.py:62,137,236; user_routes.py:130,149; report_routes.py:186,207,221
-  Description: bare except / except Exception com print(); sem logging estruturado
-  nem códigos de erro consistentes.
-
-[LOW] Deprecated datetime.utcnow()
-  Location: models/*.py, routes/*.py, seed.py, services/notification_service.py, utils/helpers.py
-  Description: datetime.utcnow() está deprecated desde Python 3.12; preferir
-  datetime.now(timezone.utc).
-
-[LOW] Inconsistent naming and verbose boolean returns
-  Location: report_routes (cat vs category); models/user.py:is_admin; models/task.py:validate_status
-  Description: Nomenclatura inconsistente e retornos if/else True/False desnecessários
-  prejudicam legibilidade.
-
-[LOW] Magic numbers / weak password policy
-  Location: utils/helpers.py:MIN_PASSWORD_LENGTH = 4; user_routes create/update
-  Description: Política de senha mínima fraca (4 chars) e constantes espalhadas
-  sem uso unificado nas routes.
-
-================================================
-SUMMARY
-  Critical: 4
-  High:     4
-  Medium:   4
-  Low:      3
-  Total issues documented: 15 (min. 5 required ✓)
+[LOW] Magic numbers / literals duplicando Settings
+  file: controllers/task_controller.py   line: 52-53 ('pending', priority 3)
+  file: controllers/user_controller.py   line: 32 (role 'user')
+  file: controllers/category_controller.py line: 21 ('#000000')
+  file: controllers/report_controller.py line: 102 (priority <= 2 hardcoded)
+  file: models/task.py                   line: 16-17 (defaults 'pending'/3 no schema DDL)
+  symbol: DEFAULT_PRIORITY, DEFAULT_COLOR, VALID_STATUSES
+  description: Settings ja declara DEFAULT_PRIORITY, DEFAULT_COLOR,
+  VALID_STATUSES e VALID_ROLES, mas os controllers repetem os literais a mao.
+  Trocar um default exige tocada em multiplos arquivos.
 ================================================

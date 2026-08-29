@@ -16,7 +16,7 @@ Skill reports: [`docs/`](./docs/).
 |------|--------|
 | Domain | E-commerce API: produtos, usuários, pedidos, relatório de vendas |
 | Architecture | MVC + services (`src/`) |
-| Success | Parameterized SQL, no secrets in responses, hashed passwords, testable services |
+| Success | Parameterized SQL, no secrets in responses, hashed passwords, signed auth, testable services |
 
 Preserve API paths and JSON field names unless the task explicitly changes the contract.
 
@@ -32,11 +32,13 @@ Preserve API paths and JSON field names unless the task explicitly changes the c
 | DB | SQLite (`loja.db`) | Per-request connection via Flask `g` |
 | Persistence | `sqlite3` + parameterized SQL | No ORM |
 | Passwords | `werkzeug.security` | Hashed at rest |
+| Authentication | `itsdangerous` | Signed, expiring Bearer tokens |
 | Tests | pytest | `tests/unit`, `tests/integration` |
 
 ```text
 flask==3.1.1
 flask-cors==5.0.1
+itsdangerous==2.2.0
 ```
 
 Dev tools: `requirements-dev.txt` (`pytest`, `ruff`).
@@ -56,7 +58,7 @@ python app.py
 Prefer `.venv` (uv default). If you see `VIRTUAL_ENV=venv does not match ... .venv`, deactivate the old env and activate `.venv`, or run via `uv run`.
 
 - Default bind: `http://127.0.0.1:5003`
-- Override with `HOST`, `PORT`, `SECRET_KEY`, `FLASK_DEBUG`, `DB_PATH`, `AMBIENTE`, `ADMIN_TOKEN`
+- Override with `HOST`, `PORT`, `SECRET_KEY`, `FLASK_DEBUG`, `DB_PATH`, `AMBIENTE`, `ADMIN_TOKEN`, `AUTH_TOKEN_MAX_AGE_SECONDS`, `CORS_ORIGINS` and seed password variables
 
 ```bash
 pip install -r requirements-dev.txt
@@ -75,7 +77,9 @@ code-smells-project/
 ├── src/
 │   ├── app.py             # create_app composition root
 │   ├── config/settings.py
+│   ├── domain/pedido.py   # order status policy
 │   ├── db/database.py     # schema, seed, request-scoped connection
+│   ├── schemas/payloads.py # input DTOs
 │   ├── models/            # Model / persistence
 │   ├── services/          # Business rules
 │   ├── controllers/       # HTTP adapters
@@ -97,11 +101,12 @@ code-smells-project/
 
 ```text
 View (routes)
-    → Controller (HTTP)
-        → Service (domain rules)
-            → Model (parameterized SQL)
-                → get_db() per request
-                    → loja.db
+    → Controller (HTTP + DTO boundary)
+        → Schema (validated payloads)
+            → Service (domain rules)
+                → Model (parameterized SQL)
+                    → get_db() per request
+                        → loja.db
 ```
 
 | Package | Role |
@@ -109,6 +114,8 @@ View (routes)
 | `src/views` | URLs → controller callables |
 | `src/controllers` | Parse request, status codes, JSON envelope |
 | `src/services` | Validation, stock, totals, auth, discounts, notifications |
+| `src/domain` | Shared domain policies such as order statuses and transitions |
+| `src/schemas` | Typed input DTOs and boundary validation |
 | `src/models` | Repositories + row mappers (no password in public mappers) |
 | `src/db` | Connection lifecycle, DDL, seed, password migration |
 | `src/config` | Env-based settings |
@@ -121,13 +128,9 @@ Unchanged tables: `produtos`, `usuarios`, `pedidos`, `itens_pedido`.
 
 - Categorias: `informatica`, `moveis`, `vestuario`, `geral`, `eletronicos`, `livros`
 - Status pedido: `pendente`, `aprovado`, `enviado`, `entregue`, `cancelado`
-- Seed users (plaintext only for login; stored hashed):
-
-| Email | Password | Tipo |
-|-------|----------|------|
-| `admin@loja.com` | `admin123` | `admin` |
-| `joao@email.com` | `123456` | `cliente` |
-| `maria@email.com` | `senha123` | `cliente` |
+- Seed users are optional and configured through `SEED_ADMIN_PASSWORD`,
+  `SEED_JOAO_PASSWORD` and `SEED_MARIA_PASSWORD`; values are hashed before storage.
+- Test-only seed credentials live in `tests/conftest.py`, not application code.
 
 Foreign keys enabled (`PRAGMA foreign_keys = ON`).
 
@@ -137,7 +140,9 @@ Foreign keys enabled (`PRAGMA foreign_keys = ON`).
 
 Base URL: `http://127.0.0.1:5003`
 
-Public paths unchanged: `/`, `/health`, `/produtos`, `/usuarios`, `/login`, `/pedidos`, `/relatorios/vendas`.
+Public paths unchanged: `/`, `/health`, `/produtos`, `/login` and registration at
+`POST /usuarios`. Product reads remain public; sensitive operations require a
+signed `Authorization: Bearer <token>` header.
 
 | Admin | Behavior |
 |-------|----------|
@@ -152,12 +157,16 @@ Public paths unchanged: `/`, `/health`, `/produtos`, `/usuarios`, `/login`, `/pe
 
 1. SQL concatenation → use `?` placeholders only
 2. Arbitrary SQL admin endpoint → removed
-3. Secrets in `/health` / hardcoded production secret → env config
+3. Secrets in `/health` / hardcoded production secret → env config with production validation
 4. Plaintext passwords / `senha` in list/get → hashed + omitted from responses
-5. God `models.py` / fat controllers → split by domain + services
-6. Global `db_connection` → Flask `g` per request
-7. N+1 on pedidos → JOIN load of itens
-8. `print` logging → `logging` module
+5. Fake authentication / broken access control → signed expiring Bearer tokens and role checks
+6. Predictable seed credentials → opt-in environment-configured seed users
+7. God `models.py` / fat controllers → split by domain + services
+8. Global `db_connection` → Flask `g` per request
+9. N+1 on pedidos → JOIN load of itens
+10. Non-atomic stock and mixed commits → service-owned transactions and conditional updates
+11. `print` logging → `logging` module
+12. Duplicated status policy / ad hoc payload checks → domain policy and DTOs
 
 ---
 
@@ -167,6 +176,7 @@ Follow [`python-development-guidelines.md`](./python-development-guidelines.md).
 
 - Parameterized SQL only
 - Thin controllers; rules in services
+- Sensitive endpoints use `require_auth` / `require_roles`; never trust role data from a token
 - `logging.getLogger(__name__)`; never log passwords
 - Secrets from environment
 - Add pytest coverage for behavior you change
@@ -188,7 +198,7 @@ curl -s http://127.0.0.1:5003/health
 curl -s http://127.0.0.1:5003/produtos
 curl -s -X POST http://127.0.0.1:5003/login \
   -H 'Content-Type: application/json' \
-  -d '{"email":"joao@email.com","senha":"123456"}'
+  -d '{"email":"<seed-email>","senha":"<seed-password>"}'
 ```
 
 ---

@@ -1,523 +1,558 @@
-# Playbook de Refatoração Arquitetural: Padrões de Transformação MVC
+# Playbook de Refatoração Arquitetural
 
-- **Análise do Commit:** `aa713e38ab7b3f7e05cfd2ded12437e9c1ad11f9`
-- **Mensagem do Commit:** `task-manager-api refactored and fix the findings`
-- **Escopo da Refatoração:** 48 arquivos alterados (+1.696 / -1.025 linhas), migração de rotas monolíticas (God Routes) para arquitetura em camadas MVC (Model-View-Controller) com validação por Schemas (Marshmallow), injeção de configurações seguras (12-Factor App) e observabilidade padronizada.
+Este playbook registra a transformação do `code-smells-project` de um módulo
+Flask monolítico para MVC em camadas com Service Layer. Os exemplos **Antes**
+foram extraídos do snapshot legado `6d1ce62`; os exemplos **Depois** foram
+extraídos da árvore final e usam linhas 1-indexed.
 
----
+## Sumário Executivo
 
-## Sumário Executivo dos 8 Padrões de Transformação
+| # | Padrão de transformação | Anti-pattern tratado | Severidade | Camadas afetadas | Estado |
+|---|---|---|---|---|---|
+| 1 | Decomposição do módulo monolítico em MVC | God Module / Lack of Separation of Concerns | CRITICAL/HIGH | views, controllers, services, models | Aplicado |
+| 2 | Configuração segura orientada a ambiente | Hardcoded Secrets / Insecure CORS | CRITICAL/MEDIUM | config, db, app | Aplicado |
+| 3 | Hash seguro e mapeamento sem senha | Insecure Cryptography / Sensitive Data Exposure | CRITICAL | db, services, models | Aplicado |
+| 4 | Autenticação assinada e autorização por papel | Fake Authentication / Broken Access Control / SQL admin | CRITICAL | middleware, services, controllers, views | Aplicado |
+| 5 | Unidade transacional e reserva atômica | Non-atomic Write / Tight Coupling / Silent Failure | HIGH/MEDIUM | services, models | Aplicado |
+| 6 | Lifecycle da conexão e carga em lote | Global State / Connection Leakage / N+1 | HIGH | db, models | Aplicado |
+| 7 | Políticas de domínio e DTOs | Shotgun Surgery / Long Method / Primitive Obsession | HIGH/MEDIUM | domain, schemas, services | Aplicado |
+| 8 | Erros e logging centralizados | Poor Error Handling / Print Logging | MEDIUM | middleware, entrypoint | Aplicado |
 
-| # | Padrão de Transformação | Anti-Pattern / Code Smell Mitigado | Severidade | Camadas Afetadas |
-|---|-------------------------|------------------------------------|------------|------------------|
-| 1 | Decomposição de God Routes em Camadas MVC | Fat Controller / Lack of Separation of Concerns | CRITICAL | views/, controllers/, schemas/ |
-| 2 | Externalização e Centralização de Configurações | Hardcoded Secrets / Configuration Drift | CRITICAL | config/settings.py, app.py |
-| 3 | Criptografia Forte e Proteção de Dados Sensíveis | Insecure Crypto (MD5) & Password Leakage | CRITICAL | models/user.py, schemas/ |
-| 4 | Substituição de Fake Token por Autenticação Assinada | Fake Authentication / Broken Access Control | CRITICAL | controllers/auth_controller.py |
-| 5 | Eliminação de N+1 Queries via Eager Loading | N+1 Query Problem / Performance Bottleneck | HIGH | controllers/task_controller.py |
-| 6 | Centralização de Regras de Domínio (Information Expert) | Shotgun Surgery / Duplicated Logic | HIGH | models/task.py, schemas/ |
-| 7 | Segregação de Domínios Poluídos (Domain Extraction) | Misplaced Responsibilities / Bloated Modules | MEDIUM | views/, controllers/ |
-| 8 | Tratamento Centralizado de Erros e Logging Estruturado | Silent Failures / Bare Except / Print Logging | MEDIUM | middlewares/error_handler.py |
+## Arquitetura MVC Alvo
 
----
+```text
+HTTP client
+    |
+    v
+View: src/views/routes.py
+    |  registro de URLs
+    v
+Controller: src/controllers/
+    |  request, auth, resposta HTTP
+    v
+Schema: src/schemas/payloads.py
+    |  DTO e validação de entrada
+    v
+Service: src/services/
+    |  caso de uso, regras e transação
+    v
+Model: src/models/
+    |  SQL parametrizado e mappers
+    v
+Database: src/db/database.py
+    |  conexão em Flask g e DDL
+    v
+SQLite: loja.db
 
-## Diagrama de Fluxo da Arquitetura Alvo (MVC)
-
+Transversal: src/middlewares/auth.py + error_handler.py
+Domínio: src/domain/pedido.py
+Configuração: src/config/settings.py
 ```
-                            ARQUITETURA ALVO (MVC)
-   
-     [ HTTP Client ] 
-           |
-           v
-    +--------------+      Validação DTO      +------------------+
-    |  View / Blue | ----------------------> |  Schema (Marsh.) |
-    +------+-------+                         +------------------+
-           | Orquestra Caso de Uso
-           v
-    +--------------+      Regra / Notif      +------------------+
-    |  Controller  | ----------------------> | Service (Notif.) |
-    +------+-------+                         +------------------+
-           | Consulta / Persistência
-           v
-    +--------------+      Eager Loading      +------------------+
-    |  Model (ORM) | ----------------------> |   Database/DB    |
-    +--------------+                         +------------------+
-```
 
----
+## Padrões de Transformação
 
-## Detalhamento dos 8 Padrões de Transformação
+### 1. Decomposição do Módulo Monolítico em MVC
 
----
+#### Diagnóstico e contexto
 
-### Padrão 1: Decomposição de God Routes em Camadas MVC Especializadas
+- **Anti-pattern:** God Module, God Routes e falta de separação de responsabilidades.
+- **Severidade padrão:** CRITICAL para o módulo que acumulava todo o ciclo;
+  HIGH para a violação de camadas.
+- **Antes:** o entrypoint registrava as rotas e os handlers misturavam request,
+  validação, Model e resposta (`6d1ce62/app.py:11-30`,
+  `6d1ce62/controllers.py:24-62`).
 
-#### 1. Diagnóstico e Contexto
-- **Anti-Pattern:** God Routes / Fat Controller (Severidade: CRITICAL).
-- **Problema:** Módulos de rota (`routes/task_routes.py`, `routes/user_routes.py`) concentravam parsing de requisições HTTP, validação manual de payload, regras de negócio, transações diretas no banco de dados (`db.session`) e serialização manual de dicionários JSON.
+#### Estratégia arquitetural
 
-#### 2. Estratégia de Transformação
-- **View (`views/task_views.py`):** Responsável estritamente por mapear endpoints HTTP, capturar parâmetros e retornar respostas com códigos de status apropriados.
-- **Schema (`schemas/task_schema.py`):** Isola validação de tipos, limites de tamanho e campos obrigatórios usando Marshmallow.
-- **Controller (`controllers/task_controller.py`):** Orquestra o fluxo do caso de uso e persistência sem acoplamento a objetos de requisição HTTP diretos.
+- View registra somente URL e método HTTP.
+- Controller adapta request, chama o caso de uso e cria a resposta.
+- Schema valida payloads sem conhecer o banco.
+- Service concentra regras e transações.
+- Model concentra SQL e mapeamento.
 
-#### 3. Exemplos Antes e Depois
+#### Antes e Depois
 
 ```python
-# [ANTES] routes/task_routes.py — Mistura de HTTP, validação, query e persistência
-@task_bp.route('/tasks', methods=['POST'])
-def create_task():
-    data = request.get_json()
-    if not data or not data.get('title'):
-        return jsonify({'error': 'Título é obrigatório'}), 400
-    if len(data.get('title', '')) > 200:
-        return jsonify({'error': 'Título muito longo'}), 400
-    
-    task = Task()
-    task.title = data['title']
-    task.description = data.get('description', '')
-    task.status = data.get('status', 'pending')
-    task.priority = data.get('priority', 3)
-    task.user_id = data.get('user_id')
-    task.category_id = data.get('category_id')
-    
-    try:
-        db.session.add(task)
-        db.session.commit()
-        return jsonify(task.to_dict()), 201
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'error': 'Erro ao criar task'}), 500
+# ANTES - 6d1ce62/app.py:11-16
+app.add_url_rule("/produtos", "criar_produto", controllers.criar_produto,
+                 methods=["POST"])
+
+# ANTES - 6d1ce62/controllers.py:24-62
+def criar_produto():
+    dados = request.get_json()
+    # validação, categorias, models.criar_produto e resposta no mesmo handler
 ```
 
 ```python
-# [DEPOIS] views/task_views.py — View enxuta delegando para Schema e Controller
-@task_bp.route('/tasks', methods=['POST'])
-def create_task():
-    payload = TaskCreateSchema().load(request.get_json() or {})
-    data, status = TaskController.create_task(payload)
-    return jsonify(data), status
+# DEPOIS - src/views/routes.py:40-45
+app.add_url_rule(
+    "/produtos",
+    "criar_produto",
+    produto_controller.criar_produto,
+    methods=["POST"],
+)
 
-# [DEPOIS] controllers/task_controller.py — Orquestração de negócio e persistência
-class TaskController:
-    @classmethod
-    def create_task(cls, payload):
-        cls._ensure_user(payload.get('user_id'))
-        cls._ensure_category(payload.get('category_id'))
-
-        task = Task(
-            title=payload['title'],
-            description=payload.get('description', ''),
-            status=payload.get('status', 'pending'),
-            priority=payload.get('priority', 3),
-            user_id=payload.get('user_id'),
-            category_id=payload.get('category_id'),
-            due_date=to_datetime(payload.get('due_date')),
-            tags=serialize_tags(payload.get('tags')),
-        )
-        db.session.add(task)
-        db.session.commit()
-
-        if task.user_id and task.user:
-            notification_service.notify_task_assigned(task.user, task)
-
-        return task.to_dict(), 201
+# DEPOIS - src/controllers/produto_controller.py:23-28
+@require_roles("admin")
+def criar_produto():
+    produto_id = produto_service().criar(request.get_json(silent=True))
+    return jsonify(
+        {"dados": {"id": produto_id}, "sucesso": True, "mensagem": "Produto criado"}
+    ), 201
 ```
 
----
+### 2. Configuração Segura Orientada a Ambiente
 
-### Padrão 2: Externalização e Centralização de Configurações e Segredos
+#### Diagnóstico e contexto
 
-#### 1. Diagnóstico e Contexto
-- **Anti-Pattern:** Hardcoded Secrets & Configuration Drift (Severidade: CRITICAL).
-- **Problema:** Strings com chaves de criptografia e credenciais SMTP (`super-secret-key-123`, `senha123`) embutidas diretamente no código-fonte, violando o princípio 12-Factor App (Config).
+- **Anti-pattern:** Hardcoded Secrets e política CORS global.
+- **Severidade padrão:** CRITICAL para segredos; MEDIUM para CORS permissivo.
+- **Antes:** `SECRET_KEY`, debug, bind e CORS eram definidos diretamente no
+  app (`6d1ce62/app.py:6-9`). Credenciais também eram fixas no seed
+  (`6d1ce62/database.py:75-83`).
 
-#### 2. Estratégia de Transformação
-- Criação de `config/settings.py` carregando valores via `os.getenv` com fallbacks seguros para ambiente de desenvolvimento.
-- Criação do arquivo de modelo `.env.example` para documentar as variáveis necessárias.
+#### Estratégia arquitetural
 
-#### 3. Exemplos Antes e Depois
+- `Settings` imutável é o único ponto de leitura de ambiente.
+- Produção falha se `SECRET_KEY` não tiver pelo menos 32 caracteres.
+- Desenvolvimento usa chave aleatória por processo, nunca um literal conhecido.
+- Senhas de seed são opcionais e fornecidas por `SEED_*_PASSWORD`.
+- CORS só é inicializado quando `CORS_ORIGINS` contém origens explícitas.
+
+#### Antes e Depois
 
 ```python
-# [ANTES] app.py e services/notification_service.py — Segredos hardcoded
-app.config['SECRET_KEY'] = 'super-secret-key-123'
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///tasks.db'
-
-class NotificationService:
-    def __init__(self):
-        self.email_user = 'taskmanager@gmail.com'
-        self.email_password = 'senha123'
+# ANTES - 6d1ce62/app.py:6-9
+app = Flask(__name__)
+app.config["SECRET_KEY"] = "minha-chave-super-secreta-123"
+app.config["DEBUG"] = True
+CORS(app)
 ```
 
 ```python
-# [DEPOIS] config/settings.py — Configuração centralizada e 12-Factor
-import os
+# DEPOIS - src/config/settings.py:87-105
+def load_settings() -> Settings:
+    ambiente = os.environ.get("AMBIENTE", "desenvolvimento").strip().lower()
+    debug = os.environ.get("FLASK_DEBUG", "0") == "1"
+    secret_key = os.environ.get("SECRET_KEY", "").strip()
+    if ambiente in PRODUCTION_ENVIRONMENTS and len(secret_key) < 32:
+        raise RuntimeError("SECRET_KEY deve ter pelo menos 32 caracteres em produção")
+    if not secret_key:
+        secret_key = secrets.token_urlsafe(32)
 
-class Settings:
-    SECRET_KEY = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-prod')
-    SQLALCHEMY_DATABASE_URI = os.getenv('DATABASE_URL', 'sqlite:///tasks.db')
-    SQLALCHEMY_TRACK_MODIFICATIONS = False
-    
-    SMTP_HOST = os.getenv('SMTP_HOST', 'smtp.gmail.com')
-    SMTP_PORT = int(os.getenv('SMTP_PORT', '587'))
-    SMTP_USER = os.getenv('SMTP_USER', '')
-    SMTP_PASSWORD = os.getenv('SMTP_PASSWORD', '')
-    SMTP_ENABLED = os.getenv('SMTP_ENABLED', 'false').lower() in ('true', '1', 'yes')
-    TOKEN_MAX_AGE_SECONDS = int(os.getenv('TOKEN_MAX_AGE_SECONDS', '86400'))
+    return Settings(
+        secret_key=secret_key,
+        debug=debug,
+        host=os.environ.get("HOST", "127.0.0.1"),
+        port=int(os.environ.get("PORT", "5003")),
+        db_path=os.environ.get("DB_PATH", "loja.db"),
+        ambiente=ambiente,
+        admin_token=os.environ.get("ADMIN_TOKEN", "").strip() or None,
+        token_max_age_seconds=_load_positive_int("AUTH_TOKEN_MAX_AGE_SECONDS", "86400"),
+        cors_origins=_load_cors_origins(),
+        seed_users=_load_seed_users(),
+    )
 
-# [DEPOIS] app.py — App Factory consumindo Settings
-def create_app(config=None):
-    app = Flask(__name__)
-    app.config['SQLALCHEMY_DATABASE_URI'] = Settings.SQLALCHEMY_DATABASE_URI
-    app.config['SECRET_KEY'] = Settings.SECRET_KEY
-    if config:
-        app.config.update(config)
-    ...
-    return app
+# DEPOIS - src/app.py:24-28
+app = Flask(__name__)
+app.config["SECRET_KEY"] = settings.secret_key
+app.config["DEBUG"] = settings.debug
+if settings.cors_origins:
+    CORS(app, origins=list(settings.cors_origins))
 ```
 
----
+### 3. Hash Seguro e Mapeamento sem Senha
 
-### Padrão 3: Criptografia Forte de Senhas e Proteção contra Vazamento de Dados Sensíveis
+#### Diagnóstico e contexto
 
-#### 1. Diagnóstico e Contexto
-- **Anti-Pattern:** Insecure Password Hashing (MD5) & Sensitive Data Exposure (Severidade: CRITICAL).
-- **Problema:** Uso de MD5 (vulnerável a ataques de colisão e tabelas arco-íris) e exposição do hash da senha nas respostas de `User.to_dict()`.
+- **Anti-pattern:** Insecure Cryptography e Sensitive Data Exposure.
+- **Severidade padrão:** CRITICAL.
+- **Antes:** seed persistia senha em texto e o mapper retornava `senha`
+  (`6d1ce62/database.py:75-83`, `6d1ce62/models.py:79-86`).
 
-#### 2. Estratégia de Transformação
-- Substituição de `hashlib.md5` por `werkzeug.security` (`generate_password_hash` e `check_password_hash` com algoritmo com salt).
-- Remoção definitiva da coluna de senha no método de serialização da entidade (`to_dict`).
+#### Estratégia arquitetural
 
-#### 3. Exemplos Antes e Depois
+- Service/seed transforma a senha com `generate_password_hash`.
+- Login usa `check_password_hash` somente no fluxo interno.
+- Mapper público omite `senha`; o hash só é incluído na busca interna por email.
+
+#### Antes e Depois
 
 ```python
-# [ANTES] models/user.py — Hash inseguro MD5 e vazamento de credenciais na API
-class User(db.Model):
-    ...
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'name': self.name,
-            'email': self.email,
-            'password': self.password,  # VAZAMENTO DE SENHA NA API!
-            'role': self.role,
-            'active': self.active,
-            'created_at': str(self.created_at)
-        }
+# ANTES - 6d1ce62/database.py:75-83
+usuarios = [
+    ("Admin", "admin@loja.com", "admin123", "admin"),
+]
+cursor.executemany(
+    "INSERT INTO usuarios (nome, email, senha, tipo) VALUES (?, ?, ?, ?)",
+    usuarios,
+)
 
-    def set_password(self, pwd):
-        self.password = hashlib.md5(pwd.encode()).hexdigest()
-
-    def check_password(self, pwd):
-        return self.password == hashlib.md5(pwd.encode()).hexdigest()
+# ANTES - 6d1ce62/models.py:79-86
+"senha": row["senha"],
 ```
 
 ```python
-# [DEPOIS] models/user.py — Criptografia segura com Werkzeug e senha suprimida
-from werkzeug.security import check_password_hash, generate_password_hash
+# DEPOIS - src/db/database.py:111-119
+user_count = conn.execute("SELECT COUNT(*) FROM usuarios").fetchone()[0]
+if user_count == 0 and seed_users:
+    hashed_users = [
+        (name, email, generate_password_hash(password), role)
+        for name, email, password, role in seed_users
+    ]
+    conn.executemany(
+        "INSERT INTO usuarios (nome, email, senha, tipo) VALUES (?, ?, ?, ?)",
+        hashed_users,
+    )
 
-class User(db.Model):
-    ...
-    def to_dict(self, include_task_count=False):
-        data = {
-            'id': self.id,
-            'name': self.name,
-            'email': self.email,
-            'role': self.role,
-            'active': self.active,
-            'created_at': self.created_at.isoformat() if self.created_at else None,
-        }
-        if include_task_count:
-            data['task_count'] = len(self.tasks) if self.tasks is not None else 0
-        return data
-
-    def set_password(self, password):
-        self.password = generate_password_hash(password)
-
-    def check_password(self, password):
-        return check_password_hash(self.password, password)
+# DEPOIS - src/models/mappers.py:22-32
+def usuario_from_row(row: Row, *, include_senha: bool = False) -> dict[str, Any]:
+    data = {
+        "id": row["id"],
+        "nome": row["nome"],
+        "email": row["email"],
+        "tipo": row["tipo"],
+        "criado_em": row["criado_em"],
+    }
+    if include_senha:
+        data["senha"] = row["senha"]
+    return data
 ```
 
----
+### 4. Autenticação Assinada e Autorização por Papel
 
-### Padrão 4: Substituição de Fake Token por Autenticação Assinada Criptograficamente
+#### Diagnóstico e contexto
 
-#### 1. Diagnóstico e Contexto
-- **Anti-Pattern:** Fake Authentication / Broken Access Control (Severidade: CRITICAL).
-- **Problema:** O endpoint `/login` devolvia uma string de token fictícia (`fake-jwt-token-{id}`) sem assinatura criptográfica, sem expiração e sem validação nos endpoints protegidos.
+- **Anti-pattern:** Fake Authentication e Broken Access Control; endpoint de
+  SQL administrativo arbitrário.
+- **Severidade padrão:** CRITICAL.
+- **Antes:** `/login` verificava credenciais sem criar sessão e as rotas não
+  validavam identidade. `/admin/query` executava SQL recebido do cliente
+  (`6d1ce62/controllers.py:237-255`, `6d1ce62/app.py:59-78`).
 
-#### 2. Estratégia de Transformação
-- Criação de `AuthController` utilizando `itsdangerous.URLSafeTimedSerializer` com expiração configurável e assinatura segura baseada em `SECRET_KEY`.
+#### Estratégia arquitetural
 
-#### 3. Exemplos Antes e Depois
+- `AuthService` assina payload mínimo com `URLSafeTimedSerializer`.
+- Middleware extrai Bearer, valida expiração e recarrega o usuário no banco.
+- O papel é consultado no banco, não confiado no token.
+- Decorators de controller aplicam `require_auth` ou `require_roles`.
+- Endpoint arbitrário é removido; reset usa token administrativo de ambiente.
+
+#### Antes e Depois
 
 ```python
-# [ANTES] routes/user_routes.py — Token fictício sem integridade ou expiração
-@user_bp.route('/login', methods=['POST'])
+# ANTES - 6d1ce62/app.py:59-78
+@app.route("/admin/query", methods=["POST"])
+def executar_query():
+    query = request.get_json().get("sql", "")
+    cursor.execute(query)
+
+# ANTES - 6d1ce62/controllers.py:237-255
 def login():
-    ...
-    if not user.check_password(password):
-        return jsonify({'error': 'Credenciais inválidas'}), 401
-    
-    return jsonify({
-        'message': 'Login realizado com sucesso',
-        'user': user.to_dict(),
-        'token': 'fake-jwt-token-' + str(user.id)
-    }), 200
+    usuario = models.login_usuario(email, senha)
+    return jsonify({"dados": usuario, "sucesso": True}), 200
 ```
 
 ```python
-# [DEPOIS] controllers/auth_controller.py — Token assinado e temporizado
-from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
-from config.settings import Settings
-from middlewares.error_handler import AppError
-from models.user import User
+# DEPOIS - src/services/auth_service.py:22-39
+def criar_token(self, usuario_id: int) -> str:
+    return self._serializer.dumps({"usuario_id": usuario_id})
 
-class AuthController:
-    @staticmethod
-    def _serializer():
-        return URLSafeTimedSerializer(Settings.SECRET_KEY, salt='task-manager-auth')
-
-    @classmethod
-    def create_token(cls, user_id):
-        return cls._serializer().dumps({'user_id': user_id})
-
-    @classmethod
-    def verify_token(cls, token):
-        try:
-            payload = cls._serializer().loads(token, max_age=Settings.TOKEN_MAX_AGE_SECONDS)
-            return payload.get('user_id')
-        except SignatureExpired as exc:
-            raise AppError('Token expirado', 401) from exc
-        except BadSignature as exc:
-            raise AppError('Token inválido', 401) from exc
-
-    @classmethod
-    def login(cls, email, password):
-        user = User.query.filter_by(email=email).first()
-        if not user or not user.check_password(password):
-            raise AppError('Credenciais inválidas', 401)
-        if not user.active:
-            raise AppError('Usuário inativo', 403)
-
-        return {
-            'message': 'Login realizado com sucesso',
-            'user': user.to_dict(),
-            'token': cls.create_token(user.id),
-        }
-```
-
----
-
-### Padrão 5: Otimização de Performance e Eliminação de N+1 Queries via Eager Loading
-
-#### 1. Diagnóstico e Contexto
-- **Anti-Pattern:** N+1 Query Problem (Severidade: HIGH).
-- **Problema:** A listagem de tarefas iterava sobre todos os registros executando `User.query.get` e `Category.query.get` manualmente para cada linha, gerando 1 + 2N queries ao banco.
-
-#### 2. Estratégia de Transformação
-- Utilização de `joinedload` do SQLAlchemy ORM no Controller para carregar `Task.user` e `Task.category` em um único comando SQL com `LEFT OUTER JOIN`.
-
-#### 3. Exemplos Antes e Depois
-
-```python
-# [ANTES] routes/task_routes.py — 1 query de tasks + 2 queries adicionais por item
-@task_bp.route('/tasks', methods=['GET'])
-def get_tasks():
-    tasks = Task.query.all()
-    result = []
-    for t in tasks:
-        task_data = t.to_dict()
-        if t.user_id:
-            user = User.query.get(t.user_id)          # Query N+1
-            task_data['user_name'] = user.name if user else None
-        if t.category_id:
-            cat = Category.query.get(t.category_id)   # Query N+1
-            task_data['category_name'] = cat.name if cat else None
-        result.append(task_data)
-    return jsonify(result), 200
-```
-
-```python
-# [DEPOIS] controllers/task_controller.py — Query única otimizada via joinedload
-from sqlalchemy.orm import joinedload
-
-class TaskController:
-    @staticmethod
-    def list_tasks():
-        tasks = Task.query.options(
-            joinedload(Task.user),
-            joinedload(Task.category),
-        ).all()
-        return [task.to_dict(include_relations=True) for task in tasks]
-```
-
----
-
-### Padrão 6: Encapsulamento de Regras de Domínio e Eliminação de Shotgun Surgery
-
-#### 1. Diagnóstico e Contexto
-- **Anti-Pattern:** Shotgun Surgery & Duplicated Code (Severidade: HIGH).
-- **Problema:** A checagem condicional de tarefa atrasada (`is_overdue`) e validações de integridade estavam duplicadas em múltiplos arquivos (`task_routes.py`, `user_routes.py`, `report_routes.py` e `helpers.py`). Qualquer mudança de especificação exigia alterações em cascata.
-
-#### 2. Estratégia de Transformação
-- Aplicação do padrão Information Expert: a regra de negócio do atraso passa a pertencer exclusivamente à entidade `Task` em `models/task.py`, com suporte a `timezone.utc`.
-
-#### 3. Exemplos Antes e Depois
-
-```python
-# [ANTES] Repetido em task_routes.py, user_routes.py, report_routes.py, helpers.py
-if t.due_date:
-    if t.due_date < datetime.utcnow():
-        if t.status != 'done' and t.status != 'cancelled':
-            task_data['overdue'] = True
-        else:
-            task_data['overdue'] = False
-    else:
-        task_data['overdue'] = False
-else:
-    task_data['overdue'] = False
-```
-
-```python
-# [DEPOIS] models/task.py — Método de domínio centralizado e timezone-aware
-def utcnow():
-    return datetime.now(timezone.utc)
-
-class Task(db.Model):
-    ...
-    def is_overdue(self):
-        if not self.due_date:
-            return False
-        if self.status in ('done', 'cancelled'):
-            return False
-        due = self.due_date
-        if due.tzinfo is None:
-            due = due.replace(tzinfo=timezone.utc)
-        return due < utcnow()
-```
-
----
-
-### Padrão 7: Reorganização e Segregação de Domínios Poluídos (Domain Extraction)
-
-#### 1. Diagnóstico e Contexto
-- **Anti-Pattern:** Misplaced Responsibilities / Domain Pollution (Severidade: MEDIUM).
-- **Problema:** O CRUD de Categorias (`/categories`) estava acoplado dentro de `routes/report_routes.py`, dificultando a manutenção, testes e extensão das regras de categoria.
-
-#### 2. Estratégia de Transformação
-- Criação de um módulo coeso para Categorias: Blueprint de apresentação (`views/category_views.py`), controlador de caso de uso (`controllers/category_controller.py`) e contrato de validação (`schemas/category_schema.py`).
-
-#### 3. Exemplos Antes e Depois
-
-```python
-# [ANTES] routes/report_routes.py — CRUD de categorias escondido dentro de relatórios
-report_bp = Blueprint('reports', __name__)
-
-@report_bp.route('/reports/summary', methods=['GET'])
-def summary_report():
-    ...
-
-@report_bp.route('/categories', methods=['POST'])
-def create_category():
-    # Endpoints de categoria misturados no domínio de relatórios
-    data = request.get_json()
-    ...
-```
-
-```python
-# [DEPOIS] views/category_views.py — Domínio isolado com Blueprint dedicado
-category_bp = Blueprint('categories', __name__)
-
-@category_bp.route('/categories', methods=['GET'])
-def list_categories():
-    return jsonify(CategoryController.list_categories()), 200
-
-@category_bp.route('/categories', methods=['POST'])
-def create_category():
-    payload = CategoryCreateSchema().load(request.get_json() or {})
-    data, status = CategoryController.create_category(payload)
-    return jsonify(data), status
-```
-
----
-
-### Padrão 8: Centralização de Tratamento de Erros e Observabilidade Estruturada
-
-#### 1. Diagnóstico e Contexto
-- **Anti-Pattern:** Silent Failures & Bare Except with Print (Severidade: MEDIUM).
-- **Problema:** Uso disseminado de blocos `try...except:` genéricos, mascaramento de erros com `print(e)` e respostas HTTP com mensagens e formatos inconsistentes.
-
-#### 2. Estratégia de Transformação
-- Criação da classe `AppError` para erros de aplicação com código HTTP customizável.
-- Criação de `middlewares/error_handler.py` registrando tratadores globais para `AppError`, `ValidationError` (Marshmallow), `IntegrityError` (banco), 404 e 500 com logging via módulo `logging`.
-
-#### 3. Exemplos Antes e Depois
-
-```python
-# [ANTES] Espalhado em dezenas de rotas — Bare except e logging com print
-@task_bp.route('/tasks/<int:task_id>', methods=['PUT'])
-def update_task(task_id):
+def usuario_do_token(self, token: str) -> dict[str, object]:
     try:
-        ...
-        db.session.commit()
-        return jsonify(task.to_dict()), 200
-    except Exception as e:
-        print(f"Erro: {e}")  # Perda de contexto e poluição de stdout
-        db.session.rollback()
-        return jsonify({'error': 'Erro ao atualizar'}), 500
+        payload = self._serializer.loads(token, max_age=self._max_age_seconds)
+    except BadData as exc:
+        raise UnauthorizedError("Token inválido ou expirado") from exc
+    if not isinstance(payload, dict):
+        raise UnauthorizedError("Token inválido ou expirado")
+    usuario_id = payload.get("usuario_id")
+    if not isinstance(usuario_id, int) or isinstance(usuario_id, bool):
+        raise UnauthorizedError("Token inválido ou expirado")
+    usuario = self._model.buscar_por_id(usuario_id)
+    if not usuario:
+        raise UnauthorizedError("Usuário não encontrado")
+    return usuario
+
+# DEPOIS - src/controllers/usuario_controller.py:12-15
+@require_roles("admin")
+def listar_usuarios():
+    usuarios = usuario_service().listar()
+    return jsonify({"dados": usuarios, "sucesso": True}), 200
+
+# DEPOIS - src/views/routes.py:111-117
+app.add_url_rule(
+    "/admin/reset-db", "reset_database", health_controller.reset_database,
+    methods=["POST"],
+)
+```
+
+### 5. Unidade Transacional e Reserva Atômica
+
+#### Diagnóstico e contexto
+
+- **Anti-pattern:** Non-atomic Write, Tight Coupling e Silent Failure.
+- **Severidade padrão:** HIGH para consistência concorrente; MEDIUM para status
+  inexistente reportado como sucesso.
+- **Antes:** `criar_pedido` validava e decrementava em passos independentes,
+  com possibilidade de itens duplicados e estoque negativo
+  (`6d1ce62/models.py:133-169`). O update de status não verificava `rowcount`.
+
+#### Estratégia arquitetural
+
+- Service abre `BEGIN IMMEDIATE`, prepara todas as linhas e controla rollback.
+- Model reserva com `UPDATE ... WHERE estoque >= ?` e retorna sucesso por
+  `rowcount`.
+- Quantidades do mesmo produto são agregadas antes da validação.
+- Status consulta a existência, aplica a transição e repõe estoque ao cancelar.
+- Models não confirmam automaticamente CRUD; o Service confirma o caso de uso.
+
+#### Antes e Depois
+
+```python
+# ANTES - 6d1ce62/models.py:137-169
+for item in itens:
+    cursor.execute("SELECT * FROM produtos WHERE id = " + str(item["produto_id"]))
+cursor.execute("UPDATE produtos SET estoque = estoque - " + str(item["quantidade"]))
+db.commit()
 ```
 
 ```python
-# [DEPOIS] middlewares/error_handler.py — Middleware centralizado e tipado
-import logging
-from flask import jsonify
-from marshmallow import ValidationError
-from sqlalchemy.exc import IntegrityError
+# DEPOIS - src/services/pedido_service.py:35-49
+try:
+    self._model.iniciar_transacao()
+    if not self._model.usuario_existe(payload.usuario_id):
+        raise DomainError("Usuário não encontrado")
+    linhas, total = self._preparar_linhas(payload)
+    pedido_id = self._model.criar(payload.usuario_id, total)
+    for produto_id, quantidade, preco in linhas:
+        if not self._model.reservar_estoque(produto_id, quantidade):
+            raise DomainError("Estoque insuficiente para o produto solicitado")
+        self._model.adicionar_item(pedido_id, produto_id, quantidade, preco)
+    self._model.commit()
+except Exception:
+    self._model.rollback()
+    raise
 
-logger = logging.getLogger(__name__)
-
-class AppError(Exception):
-    def __init__(self, message, status_code=400):
-        super().__init__(message)
-        self.message = message
-        self.status_code = status_code
-
-def register_error_handlers(app):
-    @app.errorhandler(AppError)
-    def handle_app_error(error):
-        return jsonify({'error': error.message}), error.status_code
-
-    @app.errorhandler(ValidationError)
-    def handle_validation_error(error):
-        messages = error.messages
-        if isinstance(messages, dict):
-            first = next(iter(messages.values()))
-            message = first[0] if isinstance(first, list) else str(first)
-        else:
-            message = str(messages)
-        return jsonify({'error': message}), 400
-
-    @app.errorhandler(IntegrityError)
-    def handle_integrity_error(error):
-        logger.exception('Integrity error')
-        return jsonify({'error': 'Conflito de dados'}), 409
-
-    @app.errorhandler(500)
-    def handle_internal_error(error):
-        logger.exception('Internal server error')
-        return jsonify({'error': 'Erro interno'}), 500
+# DEPOIS - src/models/pedido_model.py:77-83
+cursor = self._db.execute(
+    "UPDATE produtos SET estoque = estoque - ? "
+    "WHERE id = ? AND estoque >= ?",
+    (quantidade, produto_id, quantidade),
+)
+return cursor.rowcount == 1
 ```
 
----
+### 6. Lifecycle da Conexão e Carga em Lote
 
-## Guia Prático de Execução do Playbook (Passo a Passo)
+#### Diagnóstico e contexto
 
-1. **Isolar Configurações:** Extraia constantes, chaves e credenciais para `config/settings.py` alimentado por variáveis de ambiente via `os.getenv`.
-2. **Sanear Segurança de Dados:** Remova campos confidenciais de serializadores (`to_dict`) e adote hashing robusto (`werkzeug.security`).
-3. **Implantar Middleware de Erros:** Configure a hierarquia `AppError` e registro global de exceções antes de refatorar as rotas.
-4. **Criar Camada de Schemas (DTOs):** Modele a validação de entrada de cada entidade com Marshmallow/Pydantic.
-5. **Extrair Controllers e Services:** Mova a lógica de negócio e consultas de banco das rotas para classes controladoras puras.
-6. **Otimizar Queries com Eager Loading:** Revise listagens com relacionamentos e aplique `joinedload` ou `JOIN` explícito para evitar consultas N+1.
-7. **Reduzir as Rotas a Views Enxutas:** Substitua o corpo das rotas por apenas `Schema.load()` seguido da chamada ao `Controller`.
-8. **Validar com Testes de Fumaça e Regressão:** Execute testes unitários e de integração validando a integridade dos contratos de API.
+- **Anti-pattern:** Global Mutable State, conexão sem escopo e N+1 Query.
+- **Severidade padrão:** HIGH.
+- **Antes:** uma conexão global usava `check_same_thread=False`
+  (`6d1ce62/database.py:4-12`); cada pedido e item disparava queries adicionais
+  (`6d1ce62/models.py:187-199`).
+
+#### Estratégia arquitetural
+
+- `get_db()` cria uma conexão por contexto Flask e `close_db()` fecha no teardown.
+- Models recebem a conexão por injeção.
+- Pedidos são carregados uma vez; itens e produtos são buscados em uma consulta
+  com `LEFT JOIN` e associados em memória.
+
+#### Antes e Depois
+
+```python
+# ANTES - 6d1ce62/database.py:4-12
+db_connection = None
+
+def get_db():
+    global db_connection
+    if db_connection is None:
+        db_connection = sqlite3.connect(db_path, check_same_thread=False)
+    return db_connection
+
+# ANTES - 6d1ce62/models.py:187-199
+for row in rows:
+    cursor2.execute("SELECT * FROM itens_pedido WHERE pedido_id = " + str(row["id"]))
+    cursor3.execute("SELECT nome FROM produtos WHERE id = " + str(item["produto_id"]))
+```
+
+```python
+# DEPOIS - src/db/database.py:21-34
+def get_db() -> sqlite3.Connection:
+    if "db" not in g:
+        settings = get_settings()
+        conn = sqlite3.connect(settings.db_path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        g.db = conn
+    return g.db
+
+def close_db(_: BaseException | None = None) -> None:
+    db = g.pop("db", None)
+    if db is not None:
+        db.close()
+
+# DEPOIS - src/models/pedido_model.py:26-46
+pedidos = {row["id"]: pedido_from_row(row) for row in rows}
+placeholders = ",".join("?" * len(pedidos))
+itens_sql = f"""
+    SELECT i.pedido_id, i.produto_id, i.quantidade, i.preco_unitario,
+           p.nome AS produto_nome
+    FROM itens_pedido i
+    LEFT JOIN produtos p ON p.id = i.produto_id
+    WHERE i.pedido_id IN ({placeholders})
+    ORDER BY i.id
+"""
+item_rows = self._db.execute(itens_sql, tuple(pedidos.keys())).fetchall()
+for item in item_rows:
+    pedidos[item["pedido_id"]]["itens"].append(
+        {
+            "produto_id": item["produto_id"],
+            "produto_nome": item["produto_nome"] or "Desconhecido",
+            "quantidade": item["quantidade"],
+            "preco_unitario": item["preco_unitario"],
+        }
+    )
+```
+
+### 7. Políticas de Domínio e DTOs
+
+#### Diagnóstico e contexto
+
+- **Anti-pattern:** Shotgun Surgery, regra duplicada, Long Method e Primitive
+  Obsession.
+- **Severidade padrão:** HIGH para política espalhada; MEDIUM para método longo
+  e validações ad hoc.
+- **Antes:** estados e validações apareciam em controllers, Models e Services;
+  `criar_pedido` fazia parsing, cálculo, persistência e efeitos laterais no mesmo
+  método (`6d1ce62/models.py:133-169`).
+
+#### Estratégia arquitetural
+
+- Enum e transições vivem em `src/domain/pedido.py`.
+- DTOs imutáveis validam tipos, limites, email, status e filtros.
+- Services recebem payloads já tipados e mantêm apenas regras do caso de uso.
+- Relatório e notificações reutilizam a política de status e não repetem literais.
+
+#### Antes e Depois
+
+```python
+# ANTES - 6d1ce62/controllers.py:188-220
+dados = request.get_json()
+usuario_id = dados.get("usuario_id")
+itens = dados.get("itens", [])
+if not itens or len(itens) == 0:
+    return jsonify({"erro": "Pedido deve ter pelo menos 1 item"}), 400
+resultado = models.criar_pedido(usuario_id, itens)
+```
+
+```python
+# DEPOIS - src/domain/pedido.py:8-35
+class StatusPedido(StrEnum):
+    PENDENTE = "pendente"
+    APROVADO = "aprovado"
+    ENVIADO = "enviado"
+    ENTREGUE = "entregue"
+    CANCELADO = "cancelado"
+
+def transicao_permitida(status_atual: str, novo_status: str) -> bool:
+    return novo_status in TRANSICOES_PEDIDO.get(status_atual, frozenset())
+
+# DEPOIS - src/schemas/payloads.py:160-172
+@dataclass(frozen=True)
+class PedidoPayload:
+    usuario_id: int
+    itens: tuple[PedidoItemPayload, ...]
+
+    @classmethod
+    def from_mapping(cls, value: Any) -> PedidoPayload:
+        data = _mapping(value)
+        usuario_id = _positive_int(data.get("usuario_id"), "Usuario ID")
+        raw_items = data.get("itens")
+        if not isinstance(raw_items, (list, tuple)) or not raw_items:
+            raise SchemaError("Pedido deve ter pelo menos 1 item")
+        return cls(usuario_id, tuple(PedidoItemPayload.from_mapping(item) for item in raw_items))
+```
+
+### 8. Erros e Logging Centralizados
+
+#### Diagnóstico e contexto
+
+- **Anti-pattern:** Poor Error Handling, Silent Failures e Print Logging.
+- **Severidade padrão:** MEDIUM.
+- **Antes:** handlers capturavam `Exception`, imprimiam a exceção e devolviam
+  texto cru (`6d1ce62/controllers.py:5-12`); o entrypoint também usava `print`
+  (`6d1ce62/app.py:82-88`).
+
+#### Estratégia arquitetural
+
+- Erros de domínio carregam status HTTP sem conhecer Flask.
+- Middleware produz envelopes JSON para domínio, HTTP, conflitos e 500.
+- Logs usam `logging.getLogger(__name__)` e não expõem senhas ou tokens.
+- Entrypoint registra lifecycle com logger.
+
+#### Antes e Depois
+
+```python
+# ANTES - 6d1ce62/controllers.py:5-12
+try:
+    produtos = models.get_todos_produtos()
+    print("Listando " + str(len(produtos)) + " produtos")
+except Exception as e:
+    print("ERRO: " + str(e))
+    return jsonify({"erro": str(e)}), 500
+```
+
+```python
+# DEPOIS - src/middlewares/error_handler.py:16-35
+@app.errorhandler(DomainError)
+def handle_domain_error(exc: DomainError):
+    payload = {"erro": exc.message, "sucesso": False}
+    return jsonify(payload), exc.status_code
+
+@app.errorhandler(HTTPException)
+def handle_http_error(exc: HTTPException):
+    payload = {"erro": exc.description, "sucesso": False}
+    return jsonify(payload), exc.code or 500
+
+@app.errorhandler(Exception)
+def handle_unexpected(exc: Exception):
+    logger.exception("Unhandled error: %s", exc)
+    return jsonify({"erro": "Erro interno do servidor", "sucesso": False}), 500
+
+# DEPOIS - app.py:17-19
+if __name__ == "__main__":
+    logger.info("Servidor iniciado em http://%s:%s", settings.host, settings.port)
+    app.run(host=settings.host, port=settings.port, debug=settings.debug)
+```
+
+## Guia Prático de Execução
+
+1. Fazer uma leitura de stack e mapear o fluxo HTTP, persistência, dependências e
+   tabelas antes de alterar o código.
+2. Registrar cada achado com severidade, arquivo e intervalo de linhas no relatório
+   da Fase 2; separar problemas históricos de problemas já corrigidos.
+3. Criar o composition root e separar View, Controller, Schema, Service e Model,
+   preservando paths e envelopes JSON.
+4. Centralizar ambiente e segredos; falhar explicitamente em produção e não
+   semear usuários sem senhas fornecidas por ambiente/teste.
+5. Aplicar hashing, mappers públicos e autenticação assinada; proteger cada
+   operação por identidade e papel e remover execução arbitrária de SQL.
+6. Mover a unidade de trabalho para o Service, usar SQL condicional para estoque,
+   tratar rollback e conferir `rowcount` para updates.
+7. Colocar políticas compartilhadas no domínio, extrair DTOs e eliminar loops
+   N+1 com JOIN/batch loading.
+8. Normalizar erros e logging; retirar `print()` do código executável e restringir
+   CORS às origens configuradas.
+9. Executar testes unitários/integração, Ruff, lockfile e smoke checks; atualizar
+   `README.md`, `AGENTS.md` e este playbook com linhas finais.
+
+## Validação Final
+
+- `.venv/bin/python -m pytest -q`: `17 passed`.
+- `.venv/bin/ruff check .`: clean.
+- `uv lock --check`: clean.
+- `git diff --check`: clean.
+- Nenhum uso executável encontrado de `datetime.utcnow()`, `Flask.__version__`,
+  `hashlib.md5()` ou `hashlib.sha1()` para senhas.

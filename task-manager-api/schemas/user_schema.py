@@ -1,13 +1,12 @@
-from marshmallow import Schema, fields, validate, EXCLUDE
-
 from config.settings import Settings
+from marshmallow import EXCLUDE, Schema, fields, validate
 
 
 class UserCreateSchema(Schema):
     class Meta:
         unknown = EXCLUDE
 
-    name = fields.Str(required=True, validate=validate.Length(min=1, max=100))
+    name = fields.Str(required=True, validate=validate.Length(min=1, max=Settings.MAX_NAME_LENGTH))
     email = fields.Email(required=True)
     password = fields.Str(
         required=True,
@@ -15,7 +14,7 @@ class UserCreateSchema(Schema):
         load_only=True,
     )
     role = fields.Str(
-        load_default='user',
+        load_default=Settings.DEFAULT_ROLE,
         validate=validate.OneOf(Settings.VALID_ROLES),
     )
 
@@ -24,7 +23,7 @@ class UserUpdateSchema(Schema):
     class Meta:
         unknown = EXCLUDE
 
-    name = fields.Str(validate=validate.Length(min=1, max=100))
+    name = fields.Str(validate=validate.Length(min=1, max=Settings.MAX_NAME_LENGTH))
     email = fields.Email()
     password = fields.Str(
         validate=validate.Length(min=Settings.MIN_PASSWORD_LENGTH),

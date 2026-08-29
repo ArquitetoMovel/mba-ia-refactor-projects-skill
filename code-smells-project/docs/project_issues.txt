@@ -1,129 +1,214 @@
 ================================
   PHASE 2: CODE SMELLS DETECTION
-  ================================
-  Ordered by severity (Critical → Low).
-  Reference: issues_severity.md
+================================
+  Snapshot: código executável antes da Fase 3, em 2026-08-28.
+  References: anti_patterns_catalog.md and issues_severity.md
+  Ordering: Critical -> High -> Medium -> Low
 
   SUMMARY
   -------
-  Code Smells Detected:
-  - God Object / Large Module: 1 instance (models.py)
-  - Long Method: 3+ instances (criar_produto, criar_pedido, get_pedidos_*, relatorio_vendas)
-  - Duplicated Code: 4+ instances (validação produto, row→dict, carga de pedidos)
-  - Feature Envy: controllers acessam DB direto (health_check); models misturam SQL+domínio
-  - Primitive Obsession / Magic Numbers: descontos em relatorio_vendas
-  - Shotgun Surgery risk: regras de produto/pedido espalhadas em controllers + models
+  Critical: 4 findings
+  High:     4 findings
+  Medium:   6 findings
+  Low:      2 findings
+  Total:    16 findings
 
-  Architecture Issues Detected:
-  - Lack of Separation of Concerns (MVC quebrado)
-  - Tight Coupling (controllers ↔ models ↔ global DB)
-  - Business Logic in Controllers
-  - Global Mutable State (db_connection)
-  - Poor Error Handling and Logging (print / Exception genérica)
-  - Inconsistent Naming / contract docs (porta README vs app)
-
-  Deprecated / risky APIs:
-  - Flask __version__ deprecated (Flask 3.2+); not used in app code, but noted
-  - debug=True + host 0.0.0.0 in entrypoint (unsafe for any non-local deploy)
-  - Raw string-built SQL everywhere (not deprecated API, but obsolete/unsafe pattern)
-
-  ================================================
-
-  DETAILED FINDINGS
+  CRITICAL FINDINGS
   -----------------
 
-  [CRITICAL] SQL Injection (string-concatenated queries)
-  Location: models.py (get_produto_por_id, criar_produto, atualizar_produto,
-            deletar_produto, login_usuario, criar_usuario, criar_pedido,
-            get_pedidos_usuario, get_todos_pedidos, atualizar_status_pedido,
-            buscar_produtos, etc.)
-  Description: Queries built with string concatenation instead of parameterized
-               statements (? placeholders). Attackers can inject SQL via IDs,
-               names, email, search terms, status, etc.
+  [CRITICAL] C1 - Hardcoded secret fallback
+  file: src/config/settings.py
+  line: 47
+  symbol: load_settings
+  description: SECRET_KEY usava o literal previsível "dev-only-change-me" quando
+               a variável de ambiente não existia. Sem validação de produção,
+               uma implantação poderia compartilhar uma chave conhecida.
+  anti_pattern: Hardcoded Secrets
 
-  [CRITICAL] Arbitrary SQL execution endpoint (RCE-equivalent on DB)
-  Location: app.py → executar_query (/admin/query)
-  Description: Accepts arbitrary SQL from JSON body with no auth. Allows full
-               read/write/DDL on loja.db.
+  [CRITICAL] C2 - Operações sensíveis sem autenticação/autorização
+  file: src/views/routes.py
+  line: 40-109
+  symbol: register_routes
+  description: Criação, alteração e remoção de produtos, listagem de usuários,
+               pedidos, alteração de status e relatório eram registrados sem
+               middleware ou verificação de papel/proprietário.
+  anti_pattern: Broken Access Control
 
-  [CRITICAL] Unauthenticated destructive admin endpoint
-  Location: app.py → reset_database (/admin/reset-db)
-  Description: Deletes all rows from all tables without authentication.
+  [CRITICAL] C3 - Login sem credencial reutilizável
+  file: src/controllers/usuario_controller.py
+  line: 25-27
+  symbol: login
+  description: O login apenas devolvia dados públicos após verificar a senha;
+               não emitia token/sessão para proteger as rotas downstream.
+  anti_pattern: Fake Authentication / Broken Access Control
 
-  [CRITICAL] Secrets and credentials exposure
-  Location: app.py (SECRET_KEY hardcoded); controllers.py health_check
-            (returns secret_key in JSON); database.py seed (plaintext passwords);
-            models.py get_todos_usuarios / get_usuario_por_id (returns senha)
-  Description: Hardcoded secret, passwords stored and returned in plaintext,
-               health endpoint leaks secret_key and internal paths.
+  [CRITICAL] C4 - Credenciais administrativas previsíveis no seed
+  file: src/db/database.py
+  line: 90-123
+  symbol: _seed_if_empty
+  description: Usuários e senhas conhecidas, incluindo admin123, estavam
+               embutidos no código e eram recriados automaticamente.
+  anti_pattern: Hardcoded Secrets / Predictable Credentials
 
-  [CRITICAL] God Object / Large Module + mixed responsibilities
-  Location: models.py (~314 LOC)
-  Description: Single module owns products, users, orders, items, reporting,
-               stock updates and login — violates SRP and true Model layer.
+  HIGH FINDINGS
+  -------------
 
-  [HIGH] Lack of Separation of Concerns / broken MVC
-  Location: app.py, controllers.py, models.py, database.py
-  Description: Controllers hold validation + notifications; models hold SQL +
-               business rules; app.py holds admin/data logic; no service layer;
-               no distinct Model entities. Target architecture is clean MVC.
+  [HIGH] H1 - Reserva de estoque não atômica e itens duplicados
+  file: src/services/pedido_service.py
+  line: 51-75
+  symbol: PedidoService.criar
+  description: Cada item era validado contra o mesmo snapshot; o mesmo produto
+               podia aparecer duas vezes e passar pela checagem.
+  file: src/models/pedido_model.py
+  line: 69-73
+  symbol: PedidoModel.decrementar_estoque
+  description: O UPDATE subtraía estoque apenas por id, sem condição de saldo e
+               sem verificar rowcount, permitindo saldo negativo em concorrência.
+  anti_pattern: Tight Coupling / Non-atomic Write
 
-  [HIGH] Business logic and side effects in Controllers
-  Location: controllers.py → criar_produto, atualizar_produto, criar_pedido,
-            atualizar_status_pedido
-  Description: Validation rules, category allow-lists, and fake email/SMS/push
-               notifications live in HTTP handlers — hard to test/reuse.
+  [HIGH] H2 - Limite transacional inconsistente
+  file: src/models/produto_model.py
+  line: 34-60
+  symbol: ProdutoModel.criar, atualizar, deletar
+  description: Models de produto faziam commit internamente.
+  file: src/models/usuario_model.py
+  line: 33-39
+  symbol: UsuarioModel.criar
+  description: O Model de usuário confirmava sua própria transação.
+  file: src/models/pedido_model.py
+  line: 81-89
+  symbol: PedidoModel.atualizar_status, commit
+  description: Status confirmava internamente, enquanto criação de pedido
+               confirmava no Service, impedindo uma unidade de trabalho única.
+  anti_pattern: Lack of Separation of Concerns / Tight Coupling
 
-  [HIGH] Global mutable database connection
-  Location: database.py → db_connection / get_db()
-  Description: Process-wide SQLite connection with check_same_thread=False.
-               Hinders testing, request isolation, and safe concurrency.
+  [HIGH] H3 - Controller health/admin acoplado à persistência
+  file: src/controllers/health_controller.py
+  line: 9-12
+  symbol: imports
+  description: O controller importava diretamente get_db, reset_all_data e três
+               Models.
+  file: src/controllers/health_controller.py
+  line: 18-34, 54-61
+  symbol: health_check, reset_database
+  description: Health executava queries e reset chamava persistência diretamente,
+               fora de um Service de caso de uso.
+  anti_pattern: Lack of Separation of Concerns
 
-  [HIGH] Tight coupling without dependency injection
-  Location: controllers.py imports models + get_db; models imports get_db
-  Description: Layers import concrete modules directly; cannot swap persistence
-               or mock easily.
+  [HIGH] H4 - Política de status espalhada
+  file: src/config/settings.py
+  line: 18-24
+  symbol: STATUS_PEDIDO_VALIDOS
+  description: A lista de estados era declarada fora do domínio de pedidos.
+  file: src/services/pedido_service.py
+  line: 81-90
+  symbol: PedidoService.atualizar_status
+  description: A validação vivia no Service sem política de transição.
+  file: src/services/notificacao_service.py
+  line: 16-25
+  symbol: NotificacaoService.status_atualizado
+  description: Estados eram repetidos no comportamento de notificações.
+  file: src/models/relatorio_model.py
+  line: 16-27
+  symbol: RelatorioModel.agregados_vendas
+  description: Estados eram repetidos nas queries do relatório.
+  anti_pattern: Shotgun Surgery / Misplaced Responsibilities
 
-  [HIGH] N+1 query antipattern
-  Location: models.py → get_pedidos_usuario, get_todos_pedidos
-  Description: For each pedido, queries itens_pedido; for each item, queries
-               produtos. Performance degrades with dataset size.
+  MEDIUM FINDINGS
+  ---------------
 
-  [MEDIUM] Duplicated Code
-  Location: controllers.py (criar_produto ↔ atualizar_produto validation);
-            models.py (row→dict for produtos/usuarios/pedidos duplicated;
-            get_pedidos_usuario ↔ get_todos_pedidos nearly identical)
-  Description: Copy-paste increases Shotgun Surgery risk on rule changes.
+  [MEDIUM] M1 - Long Method com responsabilidades múltiplas
+  file: src/services/pedido_service.py
+  line: 31-79
+  symbol: PedidoService.criar
+  description: O método misturava parsing, validação, leitura de produtos,
+               estoque, total, inserts, commit e notificação.
+  anti_pattern: Long Method
 
-  [MEDIUM] Long Method
-  Location: controllers.criar_produto; models.criar_pedido; models.relatorio_vendas;
-            models.get_todos_pedidos
-  Description: Methods mix validation, persistence, calculation and mapping.
+  [MEDIUM] M2 - Validação ad hoc sem Schema/DTO
+  file: src/controllers/produto_controller.py
+  line: 37-46
+  symbol: buscar_produtos
+  description: float() era aplicado diretamente aos query params e ValueError
+               podia produzir resposta 500.
+  file: src/services/usuario_service.py
+  line: 29-40
+  symbol: UsuarioService.criar
+  description: Nome, email e senha eram convertidos para string e apenas testados
+               por presença, sem formato ou limites.
+  file: src/services/pedido_service.py
+  line: 31-56
+  symbol: PedidoService.criar
+  description: O payload era um dict genérico com validação manual de itens.
+  anti_pattern: Primitive Obsession / Missing Boundary Validation
 
-  [MEDIUM] Poor Error Handling and Logging
-  Location: controllers.py (broad except Exception + print)
-  Description: No structured logging, stack traces or error codes; leaks raw
-               exception strings to API clients.
+  [MEDIUM] M3 - Tratamento de erros HTTP inconsistente
+  file: src/middlewares/error_handler.py
+  line: 21-26
+  symbol: handle_unexpected
+  description: HTTPException era devolvida sem normalização JSON, enquanto
+               ValueError podia virar 500 e 404 podia retornar HTML.
+  anti_pattern: Poor Error Handling
 
-  [MEDIUM] Missing / weak input validation
-  Location: controllers.criar_usuario, login, criar_pedido; models SQL paths
-  Description: Types rarely coerced/validated; email format unchecked; pedido
-               item shape lightly validated.
+  [MEDIUM] M4 - Logging por print no entrypoint
+  file: app.py
+  line: 13-18
+  symbol: __main__
+  description: O entrypoint usava quatro print() em vez do logger configurado,
+               impedindo controle uniforme de nível e destino.
+  anti_pattern: Poor Observability / Print Logging
 
-  [LOW] Magic numbers
-  Location: models.relatorio_vendas (10000/5000/1000 and 0.1/0.05/0.02)
-  Description: Discount thresholds hardcoded without named constants/config.
+  [MEDIUM] M5 - Atualização inexistente reportada como sucesso
+  file: src/models/pedido_model.py
+  line: 81-86
+  symbol: PedidoModel.atualizar_status
+  description: UPDATE não verificava rowcount e sempre fazia commit.
+  file: src/services/pedido_service.py
+  line: 81-90
+  symbol: PedidoService.atualizar_status
+  description: O Service notificava e o controller respondia 200 para pedido
+               inexistente; cancelamento também não devolvia estoque.
+  anti_pattern: Silent Failure / Inconsistent State
 
-  [LOW] Inconsistent docs / naming
-  Location: README.md (port 5000) vs app.py (port 5003); ambiente "producao"
-            with debug=True in health_check
-  Description: Misleading operational signals for agents and humans.
+  [MEDIUM] M6 - CORS global sem política por ambiente
+  file: src/app.py
+  line: 24-27
+  symbol: create_app
+  description: CORS(app) habilitava configuração padrão para toda a API sem lista
+               explícita de origens, métodos ou ambiente.
+  anti_pattern: Insecure Configuration
 
-  [LOW] Dead / unused import
-  Location: models.py → import sqlite3
-  Description: Imported but unused (minor cleanliness issue).
+  LOW FINDINGS
+  ------------
 
-  ================================================
-  Totals: Critical=5 | High=5 | Medium=4 | Low=3
-  Minimum of 5 smells/issues: satisfied (17 detailed findings).
-  ================================================
+  [LOW] L1 - Versão duplicada como literal
+  file: src/controllers/health_controller.py
+  line: 31, 41
+  symbol: health_check, index
+  description: "2.0.0" era repetido em dois payloads apesar de pyproject.toml:3
+               ser a versão canônica.
+  anti_pattern: Configuration Duplication
+
+  [LOW] L2 - Violações de lint
+  file: src/config/settings.py
+  line: 3-6
+  symbol: import block
+  description: Ruff reportava I001 no bloco de imports.
+  file: src/models/pedido_model.py
+  line: 15
+  symbol: PedidoModel._carregar_pedidos
+  description: Ruff reportava E501 na assinatura acima do limite de 100 colunas.
+  anti_pattern: Code Hygiene
+
+  DEPRECATED APIs
+  ---------------
+  Não foram encontrados usos no código executável de `datetime.utcnow()`,
+  `Flask.__version__`, `hashlib.md5()` ou `hashlib.sha1()` para senhas. `app.run()`
+  permanece apenas como servidor de desenvolvimento e não é uma API depreciada.
+
+  PHASE 2 BASELINE
+  ----------------
+  - `.venv/bin/python -m pytest -q`: 9 passed.
+  - `.venv/bin/ruff check .`: 2 errors.
+  - Os intervalos acima são do snapshot auditado antes da Fase 3. A situação
+    posterior e a correspondência de cada correção estão em `project_refactored.txt`.

@@ -1,54 +1,102 @@
 ================================
-PHASE 3: REFACTORING COMPLETE
+PHASE 3: REFACTORING COMPLETE (Wave 2 — hardening do MVC existente)
 ================================
-New Project Structure:
+Baseline: projeto ja em camadas MVC (wave 1). Esta onda eliminou os 12
+findings da Fase 2, transformando MVC estrutural em MVC aplicavel
+(autenticacao realmente enforcement, transacoes ACID, agregacoes SQL).
+
+Changes by layer:
 task-manager-api/
-├── app.py                      # composition root (create_app)
-├── config/settings.py          # env-based configuration
+├── app.py                      # + fail-fast de SECRET_KEY (_configure_secret)
+├── database.py                 # + transaction() ctx manager (commit/rollback)
+├── config/settings.py          # + dominios como constantes (STATUS_*, ROLE_*,
+│                               #   NON_OVERDUE_STATUSES, DEFAULT/PAGE limits,
+│                               #   WEAK_SECRETS); SECRET_KEY sem default fraco
 ├── models/
-│   ├── user.py
-│   ├── task.py
-│   └── category.py
-├── views/                      # View (HTTP / blueprints)
-│   ├── user_views.py
-│   ├── task_views.py
-│   ├── category_views.py
-│   ├── report_views.py
-│   └── health_views.py
-├── controllers/                # Controller (business logic)
-│   ├── auth_controller.py
-│   ├── user_controller.py
-│   ├── task_controller.py
-│   ├── category_controller.py
-│   └── report_controller.py
-├── schemas/                    # Marshmallow validation
-├── services/notification_service.py
-├── middlewares/error_handler.py
-├── utils/helpers.py
-├── database.py
-└── seed.py
+│   ├── user.py                 # to_dict(task_count=) injeta contagem externa;
+│   │                           #   utcnow unico; role default via Settings
+│   ├── task.py                 # remove validate_status/validate_priority mortos;
+│   │                           #   is_overdue() usa Settings + utils.time.as_utc
+│   └── category.py             # utcnow unico via utils.time
+├── utils/
+│   ├── time.py (NEW)           # fonte unica utcnow()/as_utc()
+│   └── helpers.py              # remove format_date/is_valid_color (mortos)
+├── middlewares/
+│   ├── auth.py (NEW)           # token_required, role_required, current_user()
+│   └── error_handler.py        # rollback() nos handlers IntegrityError e 500
+├── controllers/
+│   ├── auth_controller.py      # serializa com current_app.secret_key + salt
+│   │                           #   do Settings; payload com issued_at
+│   ├── user_authz.py (NEW)     # regras self-or-admin / role escalation
+│   ├── user_controller.py      # transaction(); session.get(); contagem de
+│   │                           #   tasks via 1 GROUP BY; paginacao; reusa
+│   │                           #   Task.to_dict (dicionario manual removido)
+│   ├── task_controller.py      # transaction(); session.get(); stats() com 1
+│   │                           #   GROUP BY + overdue por filtro SQL (sem
+│   │                           #   full-table load); search tipado + paginado
+│   ├── category_controller.py  # listagem com 1 OUTER JOIN GROUP BY;
+│   │                           #   delete NULLifica tasks.category_id na
+│   │                           #   mesma transacao (sem optos)
+│   └── report_controller.py    # summary/user_report 100% SQL agregado
+│                               #   (case+GROUP BY), reusa TaskController
+├── schemas/
+│   ├── common_schema.py (NEW)  # PaginationSchema (page>=1, per_page<=max)
+│   ├── task_schema.py          # TaskSearchSchema; remove pre_load no-op;
+│   │                           #   ResponseSchema agora usado nas views
+│   ├── user_schema.py          # ResponseSchemas ligados na saida (dump)
+│   └── category_schema.py      # idem
+├── views/                      # + guards token_required/role_required,
+│   └── *.py                    #   + validacao de query args via schema,
+│                               #   + saidas serializadas por ResponseSchema,
+│                               #   + envelope de paginacao
+├── services/notification_service.py  # remove notify_task_overdue (morto)
+├── requirements.txt            # + sqlalchemy==2.0.51, itsdangerous==2.2.0
+│                               #   (imports diretos antes apenas transitivos)
+└── .env.example                # SECRET_KEY obrigatorio documentado
 
-Issues Fixed:
-  ✓ Hardcoded SECRET_KEY / SMTP credentials → .env + Settings
-  ✓ MD5 passwords → Werkzeug password hashes
-  ✓ Password leak in to_dict → removed
-  ✓ Fake JWT → signed itsdangerous token
-  ✓ Fat routes → thin Views + Controllers (MVC)
-  ✓ Duplicated overdue/validation → Task.is_overdue + schemas
-  ✓ N+1 on GET /tasks → joinedload
-  ✓ Categories CRUD moved out of reports → category_views
-  ✓ Dead NotificationService → wired (opt-in SMTP)
-  ✓ Bare except / print logging → AppError + logging
-  ✓ Unused requests dependency removed
-  ✓ datetime.utcnow → timezone-aware utcnow
+Issues Fixed (todos os 12 da Fase 2):
+  ✓ [CRITICAL] Auth nunca aplicada → decorators token_required/role_required
+    em todas as views; matriz public/user/self-admin/manager/admin
+  ✓ [CRITICAL] Fallback SECRET_KEY fraco → fail-fast em producao; chave
+    efemera apenas em DEBUG/TESTS; tokens com secret do app, salt constante
+  ✓ [HIGH] Commits sem rollback → database.transaction() em toda escrita
+    (user/task/category) + rollback nos handlers IntegrityError/500
+  ✓ [HIGH] N+1 / full-table loads → list_users (1 GROUP BY), list_categories
+    (1 OUTER JOIN), summary (agregados SQL + case), stats (GROUP BY +
+    filtro SQL de overdue)
+  ✓ [HIGH] Categoria excluida deixava tasks.category_id opto → UPDATE
+    coordenado NULL + DELETE atomico
+  ✓ [MED] ?priority=abc dava 500 → TaskSearchSchema/PaginationSchema
+    respondem 400 com mensagem clara
+  ✓ [MED] Dead code → ResponseSchemas ligados na saida (dump), no-op
+    pre_load removido, validators mortos do Model removidos, helpers mortos
+    removidos, notify_task_overdue removido
+  ✓ [MED] Deps nao declaradas → itsdangerous e SQLAlchemy pinados em
+    requirements.txt
+  ✓ [MED] Duplicacao residual → utils/time.utcnow()/as_utc() unicos,
+    contagens de status compartilhadas (TaskController.status_counts),
+    get_user_tasks reusa Task.to_dict
+  ✓ [MED] Sem paginacao → GET /tasks, /users, /tasks/search paginados
+    (envelope items/page/per_page/total/pages; DEFAULT/MAX_PER_PAGE)
+  ✓ [LOW] Query.get() legado → db.session.get() em 11 ocorrencias
+    (LegacyAPIWarning zerada, validado com warnings=error)
+  ✓ [LOW] Magic numbers → Settings.DEFAULT_STATUS/ROLE/COLOR/PRIORITY,
+    HIGH_PRIORITY_MAX, NON_OVERDUE_STATUSES, MAX_NAME_LENGTH
 
-Validation
-  ✓ Application boots without errors (create_app)
-  ✓ Seed populates users/categories/tasks
-  ✓ Endpoints smoke-tested via Flask test_client:
-      GET /health, GET /, GET /users, POST /login,
-      GET /tasks, GET /tasks/stats, GET /categories,
-      GET /reports/summary, POST /tasks, validation 400
-  ✓ Password absent from login/user payloads
-  ✓ README.md and AGENTS.md updated
-================================
+Validation (Flask test_client, warnings-as-errors)
+  ✓ App boots com create_app; seed executa (3 users, 4 cats, 10 tasks)
+  ✓ Zero LegacyAPIWarning (simplefilter error)
+  ✓ Public: /health, /, POST /login, POST /users
+  ✓ 401 sem token / token invalido / token assinado com outra chave /
+    forja com secret default
+  ✓ 403: user listando users, manager deletando user, user editando
+    terceiros, user escalando proprio role
+  ✓ 200: fluxo admin completo (CRUD users/tasks/categories/reports)
+  ✓ 400: page=0, per_page=9999, priority=abc, status=bogus, senha curta
+  ✓ Paginacao: envelope correto e total consistente
+  ✓ delete_category: tasks permanecem com category_id NULL
+  ✓ delete_user: cascade de tasks atomica
+  ✓ stats()/summary() consistentes com Task.is_overdue() (regra unica)
+  ✓ Producao sem SECRET_KEY forte → RuntimeError fail-fast
+  ✓ DEBUG com SECRET_KEY fraco → chave efemera + warning (nao quebra dev)
+================================================

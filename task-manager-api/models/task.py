@@ -1,10 +1,6 @@
-from datetime import datetime, timezone
-
+from config.settings import Settings
 from database import db
-
-
-def utcnow():
-    return datetime.now(timezone.utc)
+from utils.time import as_utc, utcnow
 
 
 class Task(db.Model):
@@ -13,8 +9,8 @@ class Task(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     title = db.Column(db.String(200), nullable=False)
     description = db.Column(db.Text, nullable=True)
-    status = db.Column(db.String(50), default='pending')
-    priority = db.Column(db.Integer, default=3)
+    status = db.Column(db.String(50), default=Settings.DEFAULT_STATUS)
+    priority = db.Column(db.Integer, default=Settings.DEFAULT_PRIORITY)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
     category_id = db.Column(db.Integer, db.ForeignKey('categories.id'), nullable=True)
     created_at = db.Column(db.DateTime, default=utcnow)
@@ -45,21 +41,9 @@ class Task(db.Model):
             data['category_name'] = self.category.name if self.category else None
         return data
 
-    @staticmethod
-    def validate_status(new_status):
-        from config.settings import Settings
-        return new_status in Settings.VALID_STATUSES
-
-    @staticmethod
-    def validate_priority(priority):
-        return 1 <= priority <= 5
-
     def is_overdue(self):
         if not self.due_date:
             return False
-        if self.status in ('done', 'cancelled'):
+        if self.status in Settings.NON_OVERDUE_STATUSES:
             return False
-        due = self.due_date
-        if due.tzinfo is None:
-            due = due.replace(tzinfo=timezone.utc)
-        return due < utcnow()
+        return as_utc(self.due_date) < utcnow()

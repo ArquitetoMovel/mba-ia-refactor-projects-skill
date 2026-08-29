@@ -19,6 +19,11 @@ def settings(tmp_path) -> Settings:
         db_path=str(tmp_path / "test.db"),
         ambiente="teste",
         admin_token="test-admin-token",
+        seed_users=(
+            ("Admin", "admin@loja.com", "admin123", "admin"),
+            ("João Silva", "joao@email.com", "123456", "cliente"),
+            ("Maria Santos", "maria@email.com", "senha123", "cliente"),
+        ),
     )
 
 

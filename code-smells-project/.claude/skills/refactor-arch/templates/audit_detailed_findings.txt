@@ -1,0 +1,32 @@
+================================
+PHASE 3: AUDIT REPORT UPDATE
+================================
+
+Target report: ../reports/audit-project-1.md
+Target section: ## 2. Detailed Findings (Ordered by Severity)
+
+Rules:
+- Preserve the report summary, severity order, finding titles, descriptions, impacts, and recommendations.
+- Use source paths relative to the `code-smells-project` project root.
+- Record exact 1-indexed, inclusive line intervals as `line: START-END`.
+- Use `N-N` for a single-line finding.
+- Add one location entry for every affected file.
+- Record separate intervals when the same file has disjoint affected sections.
+- Do not use approximate locations such as `~LOC` or "several functions".
+
+## 2. Detailed Findings (Ordered by Severity)
+
+### [{{SEVERITY}}] {{FINDING_TITLE}}
+- **Location:**
+  - `file: {{SOURCE_FILE}}`
+    `line: {{START_LINE}}-{{END_LINE}}`
+    `symbol: {{FUNCTION_CLASS_OR_ROUTE}}`
+  - `file: {{SECOND_SOURCE_FILE}}`
+    `line: {{SECOND_START_LINE}}-{{SECOND_END_LINE}}`
+    `symbol: {{SECOND_FUNCTION_CLASS_OR_ROUTE}}`
+- **Description:** {{DESCRIPTION}}
+- **Impact:** {{IMPACT}}
+- **Recommendation:** {{RECOMMENDATION}}
+
+Repeat the finding block for every finding, preserving the CRITICAL, HIGH,
+MEDIUM, and LOW order from the Phase 2 results.

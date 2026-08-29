@@ -1,19 +1,31 @@
 ================================
 PHASE 1: PROJECT ANALYSIS
 ================================
-Language:      Python 3
+Project:       task-manager-api (re-audit after first MVC refactor)
+Language:      Python 3.14
 Framework:     Flask 3.0.0
-ORM:           Flask-SQLAlchemy 3.1.1
-Dependencies:  flask-cors 4.0.0, marshmallow 3.20.1 (unused),
-               requests 2.31.0 (unused), python-dotenv 1.0.0 (unused)
-Domain:        Task Manager API (tasks, users, categories, reports)
-Architecture:  Camadas parciais (models/, routes/, services/, utils/) —
-               NÃO é MVC completo: rotas acumulam validação, regras de
-               negócio e acesso a dados; services/ quase não é usado;
-               sem camada Controller dedicada; View = JSON inline nas routes.
-Source files:  15 Python files analyzed (~1294 LOC)
-DB:            SQLite (tasks.db)
+ORM:           Flask-SQLAlchemy 3.1.1 (SQLAlchemy 2.0.51)
+Validation:    Marshmallow 3.20.1 (schemas/ layer in use)
+Auth:          itsdangerous 2.2.0 URLSafeTimedSerializer (NOT declared in
+               requirements.txt — transitive dep of Flask)
+Dependencies:  flask-cors 4.0.0, python-dotenv 1.0.0
+Domain:        Task Manager API (tasks, users, categories, reports, login)
+Architecture:  MVC em camadas (models/, views/ blueprints, controllers/,
+               schemas/, services/, middlewares/, config/) com Application
+               Factory create_app() — estrutura correta, mas com lacunas de
+               seguranca (autenticacao nunca aplicada), transacoes, N+1 e
+               codigo morto.
+Source files:  31 Python files analyzed (~1321 LOC)
+DB:            SQLite (DATABASE_URL, instance/tasks.db)
 DB tables:     users, tasks, categories
-Entry points:  app.py (API), seed.py (dados iniciais)
-Port:          5000 (debug=True, host=0.0.0.0)
-================================================
+Entry points:  app.py (create_app + module-level app), seed.py
+Port:          5000 (DEBUG/HOST via env; default HOST=0.0.0.0)
+Layers found:
+  Model       models/user.py, models/task.py, models/category.py (to_dict, is_overdue)
+  View        views/*.py (blueprints thin, delegam para controllers + schemas)
+  Controller  controllers/*.py (User/Task/Category/Report/Auth)
+  Schema      schemas/*.py (Marshmallow Create/Update + Response schemas)
+  Service     services/notification_service.py (SMTP, singleton)
+  Middleware  middlewares/error_handler.py (AppError + handlers globais)
+  Config      config/settings.py (env-based Settings)
+================================

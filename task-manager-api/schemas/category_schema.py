@@ -7,7 +7,7 @@ class CategoryCreateSchema(Schema):
     class Meta:
         unknown = EXCLUDE
 
-    name = fields.Str(required=True, validate=validate.Length(min=1, max=100))
+    name = fields.Str(required=True, validate=validate.Length(min=1, max=Settings.MAX_NAME_LENGTH))
     description = fields.Str(load_default='')
     color = fields.Str(
         load_default=Settings.DEFAULT_COLOR,
@@ -19,7 +19,7 @@ class CategoryUpdateSchema(Schema):
     class Meta:
         unknown = EXCLUDE
 
-    name = fields.Str(validate=validate.Length(min=1, max=100))
+    name = fields.Str(validate=validate.Length(min=1, max=Settings.MAX_NAME_LENGTH))
     description = fields.Str()
     color = fields.Str(validate=validate.Regexp(r'^#[0-9A-Fa-f]{6}$'))
 

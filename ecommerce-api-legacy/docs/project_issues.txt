@@ -23,51 +23,59 @@ Architecture Issues Detected:
 --------------------------------
 FINDINGS (ordered by severity)
 --------------------------------
+Locations refer to the legacy (pre-refactor) sources at commit 73a4dec.
 
 [CRITICAL] God Object — AppManager concentrates infrastructure, persistence, HTTP routing, checkout domain, payment decision, financial report and user deletion in a single class.
-  Location: src/AppManager.js (class AppManager, methods initDb / setupRoutes)
+  file: src/AppManager.js  line: 4-139 (class AppManager; initDb 10-23, setupRoutes 25-138)
 
 [CRITICAL] Hard-coded secrets — database credentials, live payment gateway key and SMTP user are committed in source.
-  Location: src/utils.js (config object)
+  file: src/utils.js  line: 1-7 (config object: dbUser/dbPass/paymentGatewayKey/smtpUser)
 
 [CRITICAL] Sensitive data exposure in logs — card number and paymentGatewayKey printed to console during checkout.
-  Location: src/AppManager.js (processPaymentAndEnroll, console.log with cc and config.paymentGatewayKey)
+  file: src/AppManager.js  line: 45 (console.log with cc and config.paymentGatewayKey)
 
 [HIGH] Lack of MVC Separation of Concerns — bootstrap, controllers, models and response formatting are not separated; no dedicated Model, View (JSON presentation) or Controller layers.
-  Location: src/app.js, src/AppManager.js, src/utils.js
+  file: src/app.js          line: 1-14 (bootstrap + listen)
+  file: src/AppManager.js   line: 1-141 (all responsibilities in one class)
+  file: src/utils.js        line: 1-25 (config, cache and crypto helpers mixed)
 
 [HIGH] Business logic in route handlers — validation, user upsert, fake payment gateway, enrollment, payment insert and audit trail all live inside Express route callbacks.
-  Location: src/AppManager.js (app.post '/api/checkout')
+  file: src/AppManager.js  line: 28-78 (app.post '/api/checkout')
 
 [HIGH] Insecure password helper (badCrypto) — not a real hash; truncates base64 and is used as if it were cryptography.
-  Location: src/utils.js (badCrypto), used in src/AppManager.js
+  file: src/utils.js        line: 17-23 (badCrypto definition)
+  file: src/AppManager.js   line: 68 (usage: badCrypto(p || "123456"))
 
 [HIGH] No transactional boundary on checkout — enrollment, payment and audit_log inserts are sequential without BEGIN/COMMIT; partial writes possible on failure.
-  Location: src/AppManager.js (nested db.run calls in processPaymentAndEnroll)
+  file: src/AppManager.js  line: 50-63 (nested db.run inserts in processPaymentAndEnroll)
 
 [HIGH] Global mutable state — process-local cache and unused totalRevenue exported as shared mutable state.
-  Location: src/utils.js (globalCache, totalRevenue, logAndCache)
+  file: src/utils.js  line: 9-15 (globalCache, totalRevenue, logAndCache; exported at line 25)
 
 [MEDIUM] Long Method / Callback Hell — deeply nested sqlite3 callbacks in checkout and financial-report make control flow hard to follow and error-prone.
-  Location: src/AppManager.js (setupRoutes: POST /api/checkout, GET /api/admin/financial-report)
+  file: src/AppManager.js  line: 28-78 (POST /api/checkout handler, nesting up to 5 levels at 50-63)
+  file: src/AppManager.js  line: 80-129 (GET /api/admin/financial-report handler)
 
 [MEDIUM] N+1 queries in financial report — for each course, loads enrollments then per-enrollment user and payment queries; racey assembly via counters.
-  Location: src/AppManager.js (GET /api/admin/financial-report)
+  file: src/AppManager.js  line: 89-127 (forEach courses 89 → enrollments 92 → per-enrollment user 104 and payment 106 queries)
 
 [MEDIUM] Missing / inconsistent error handling — several callbacks ignore err; DELETE /api/users/:id always returns success message even on DB error.
-  Location: src/AppManager.js (DELETE handler; audit_logs callback ignores err)
+  file: src/AppManager.js  line: 133-136 (DELETE handler ignores err, always sends success text)
+  file: src/AppManager.js  line: 57 (audit_logs insert callback ignores err yet responds 200)
+  file: src/AppManager.js  line: 104-106 (report callbacks ignore err from user/payment queries)
 
 [MEDIUM] Orphan data on user delete — deletes only users row; enrollments and payments remain dirty.
-  Location: src/AppManager.js (app.delete '/api/users/:id')
+  file: src/AppManager.js  line: 131-137 (app.delete '/api/users/:id')
 
 [MEDIUM] Race on boot — initDb() is async via callbacks; app.listen() is not gated on schema/seed completion.
-  Location: src/app.js + src/AppManager.js (initDb)
+  file: src/app.js          line: 9-12 (initDb() then listen, not awaited)
+  file: src/AppManager.js   line: 10-23 (initDb is fire-and-forget via db.serialize callbacks)
 
 [LOW] Poor naming / abbreviated request fields — usr, eml, pwd, c_id, cc reduce readability (legacy contract).
-  Location: src/AppManager.js (checkout body mapping)
+  file: src/AppManager.js  line: 29-33 (body mapping to u, e, p, cid, cc)
 
 [LOW] Dead / unused state — totalRevenue exported but never updated meaningfully by the app flow.
-  Location: src/utils.js
+  file: src/utils.js  line: 10 (declaration; exported at line 25; no import-side usage in src/AppManager.js line 2)
 
 Deprecated APIs: none detected for Express 4 / sqlite3 usage in this codebase (callback style is legacy-pattern but not formally deprecated).
 

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from src.db.database import get_db
+from src.db.database import get_db, get_settings
 from src.models.pedido_model import PedidoModel
 from src.models.produto_model import ProdutoModel
 from src.models.relatorio_model import RelatorioModel
 from src.models.usuario_model import UsuarioModel
+from src.services.auth_service import AuthService
+from src.services.health_service import HealthService
 from src.services.notificacao_service import NotificacaoService
 from src.services.pedido_service import PedidoService
 from src.services.produto_service import ProdutoService
@@ -22,9 +24,22 @@ def usuario_service() -> UsuarioService:
     return UsuarioService(UsuarioModel(get_db()))
 
 
+def auth_service() -> AuthService:
+    settings = get_settings()
+    return AuthService(
+        UsuarioModel(get_db()),
+        settings.secret_key,
+        settings.token_max_age_seconds,
+    )
+
+
 def pedido_service() -> PedidoService:
     return PedidoService(PedidoModel(get_db()), NotificacaoService())
 
 
 def relatorio_service() -> RelatorioService:
     return RelatorioService(RelatorioModel(get_db()))
+
+
+def health_service() -> HealthService:
+    return HealthService(get_db(), get_settings())
